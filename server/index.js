@@ -28,22 +28,54 @@ app.use(express.static(path.join(__dirname, '../public'), {
   }
 }));
 
-// Set up WebSocket broadcasting in scheduler
+// Set up WebSocket broadcasting with heartbeat to keep connections healthy
 const connectedSockets = new Set();
+
 wss.on('connection', (ws) => {
+  ws.isAlive = true;
   connectedSockets.add(ws);
+  
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
   ws.send(JSON.stringify({ type: 'connected', data: { message: 'Connected to AutoBackup Hub live stream' } }));
 
   ws.on('close', () => {
     connectedSockets.delete(ws);
   });
+
+  ws.on('error', () => {
+    connectedSockets.delete(ws);
+  });
+});
+
+// Periodic heartbeat to clean up disconnected/stale sockets
+const wsHeartbeatInterval = setInterval(() => {
+  for (const ws of connectedSockets) {
+    if (ws.isAlive === false) {
+      connectedSockets.delete(ws);
+      try { ws.terminate(); } catch (e) {}
+    } else {
+      ws.isAlive = false;
+      try { ws.ping(); } catch (e) {}
+    }
+  }
+}, 30000);
+
+wss.on('close', () => {
+  clearInterval(wsHeartbeatInterval);
 });
 
 function broadcastWS(type, data) {
   const messageStr = JSON.stringify({ type, data });
   for (const client of connectedSockets) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(messageStr);
+      try {
+        client.send(messageStr);
+      } catch (e) {
+        connectedSockets.delete(client);
+      }
     }
   }
 }
@@ -51,7 +83,11 @@ function broadcastWS(type, data) {
 scheduler.setWebSocketBroadcast((messageStr) => {
   for (const client of connectedSockets) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(messageStr);
+      try {
+        client.send(messageStr);
+      } catch (e) {
+        connectedSockets.delete(client);
+      }
     }
   }
 });
@@ -1028,3 +1064,33 @@ server.listen(PORT, () => {
   // Pre-warm capacity quota metrics for all connected remotes on startup
   rclone.prewarmRemoteAboutCache().catch(() => {});
 });
+
+// Process safety: prevent sudden crashes on unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[AutoBackup Hub] Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[AutoBackup Hub] Uncaught Exception:', err);
+});
+
+// Graceful shutdown handling
+function gracefulShutdown(signal) {
+  console.log(`[AutoBackup Hub] Received ${signal}. Shutting down gracefully...`);
+  clearInterval(wsHeartbeatInterval);
+  for (const client of connectedSockets) {
+    try { client.close(1001, 'Server shutting down'); } catch (e) {}
+  }
+  server.close(() => {
+    console.log('[AutoBackup Hub] HTTP & WebSocket servers closed.');
+    process.exit(0);
+  });
+  setTimeout(() => {
+    console.error('[AutoBackup Hub] Forced shutdown after timeout.');
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+

@@ -10,8 +10,15 @@ if (!fs.existsSync(CONFIG_DIR)) {
 const DB_PATH = path.join(CONFIG_DIR, 'autobackup.db');
 const db = new sqlite3.Database(DB_PATH);
 
-// Initialize DB schema
+// Initialize DB schema & performance PRAGMAs
 db.serialize(() => {
+  // Performance optimizations
+  db.run("PRAGMA journal_mode = WAL;");
+  db.run("PRAGMA synchronous = NORMAL;");
+  db.run("PRAGMA busy_timeout = 5000;");
+  db.run("PRAGMA cache_size = -64000;"); // 64MB memory cache
+  db.run("PRAGMA temp_store = MEMORY;");
+
   // Remotes table
   db.run(`
     CREATE TABLE IF NOT EXISTS remotes (
@@ -43,19 +50,13 @@ db.serialize(() => {
   `);
 
   // Migration: ensure conflict_mode column exists in tasks if created earlier
-  db.run("ALTER TABLE tasks ADD COLUMN conflict_mode TEXT DEFAULT 'smart'", (err) => {
-    // Ignore error if column already exists
-  });
+  db.run("ALTER TABLE tasks ADD COLUMN conflict_mode TEXT DEFAULT 'smart'", (err) => {});
 
   // Migration: ensure priority column exists in tasks if created earlier
-  db.run("ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'normal'", (err) => {
-    // Ignore error if column already exists
-  });
+  db.run("ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'normal'", (err) => {});
 
   // Migration: ensure bw_limit column exists in tasks if created earlier
-  db.run("ALTER TABLE tasks ADD COLUMN bw_limit TEXT DEFAULT ''", (err) => {
-    // Ignore error if column already exists
-  });
+  db.run("ALTER TABLE tasks ADD COLUMN bw_limit TEXT DEFAULT ''", (err) => {});
 
   // Settings table for storing Discord webhook URL and global config
   db.run(`
@@ -80,6 +81,12 @@ db.serialize(() => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Indexes for high-speed queries on large datasets
+  db.run("CREATE INDEX IF NOT EXISTS idx_logs_task_id ON logs(task_id);");
+  db.run("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at DESC);");
+  db.run("CREATE INDEX IF NOT EXISTS idx_tasks_enabled ON tasks(enabled);");
+  db.run("CREATE INDEX IF NOT EXISTS idx_tasks_next_run ON tasks(next_run);");
 
   // User-defined source folders (persisted across container restarts, no docker-compose edit needed)
   db.run(`

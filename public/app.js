@@ -133,15 +133,17 @@ function appendConsoleLine(text, type = 'normal') {
 
   const textStr = String(text || '');
   const lines = textStr.split('\n');
+  const fragment = document.createDocumentFragment();
 
   lines.forEach((lineText, idx) => {
     if (!lineText && idx === lines.length - 1) return;
     const lineEl = document.createElement('div');
     lineEl.className = `console-line ${type}`;
     lineEl.textContent = lineText;
-    consoleWin.appendChild(lineEl);
+    fragment.appendChild(lineEl);
   });
 
+  consoleWin.appendChild(fragment);
   consoleWin.scrollTop = consoleWin.scrollHeight;
 
   while (consoleWin.children.length > 500) {
