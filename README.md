@@ -2,10 +2,27 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
+[![GHCR Package](https://img.shields.io/badge/GHCR-Package-purple?logo=github&logoColor=white)](https://github.com/attacker2007/autobackup/pkgs/container/autobackup)
 [![Rclone Engine](https://img.shields.io/badge/Engine-Rclone-orange?logo=databricks&logoColor=white)](https://rclone.org)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green?logo=node.js&logoColor=white)](https://nodejs.org)
 
 **AutoBackup Hub** is a self-hosted, containerized multi-cloud backup and file synchronization manager with an interactive web dashboard. Powered by the high-performance **Rclone** engine, it allows you to automatically route, schedule, sync, and transfer files from your local machines (Windows, macOS, Linux) to cloud storage providers including **pCloud, Google Drive, Microsoft OneDrive, Dropbox, TeraBox, Box, Mega, and Amazon S3 / S3-compatible storage**.
+
+---
+
+## ⚡ Quick Run (Pre-built Image)
+
+You can launch AutoBackup Hub directly using the pre-built Docker image from GitHub Container Registry:
+
+```bash
+docker run -d \
+  --name autobackup-hub \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -v ./config:/config \
+  -v "C:/Users/yourname/Documents:/Documents:ro" \
+  ghcr.io/attacker2007/autobackup:latest
+```
 
 ---
 
