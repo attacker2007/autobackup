@@ -1,0 +1,32 @@
+{
+  "name": "autobackup-hub",
+  "version": "1.0.0",
+  "description": "Multi-cloud automated backup & sync container service with Rclone engine and Web UI dashboard",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "license": "MIT",
+  "keywords": [
+    "backup",
+    "cloud-storage",
+    "rclone",
+    "pcloud",
+    "google-drive",
+    "onedrive",
+    "dropbox",
+    "docker",
+    "sync",
+    "cron"
+  ],
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "compression": "^1.8.1",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3",
+    "sqlite3": "^5.1.7",
+    "uuid": "^9.0.1",
+    "ws": "^8.17.0"
+  }
+}

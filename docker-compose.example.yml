@@ -1,0 +1,37 @@
+services:
+  autobackup-hub:
+    build: .
+    container_name: autobackup-hub
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - CONFIG_DIR=/config
+      - RCLONE_CONFIG=/config/rclone.conf
+    volumes:
+      # Persistent configuration and database storage
+      - ./config:/config
+
+      # ── (Optional) Live code mounts for local development ─────────────────
+      # - ./server:/app/server:ro
+      # - ./public:/app/public:ro
+      # - ./docker-compose.yml:/app/docker-compose.yml:ro
+
+      # ── (Optional) Full drive mounts for in-dashboard folder browsing ─────
+      # Windows Example:
+      # - C:/:/hostfs/C:ro
+      # - D:/:/hostfs/D:ro
+      # Linux / macOS Example:
+      # - /:/hostfs:ro
+
+      # ── Backup Source Folders (Mount read-only for safety) ────────────────
+      # Windows Examples:
+      # - "C:/Users/yourname/Documents:/Documents:ro"
+      # - "C:/Users/yourname/Pictures:/Pictures:ro"
+      # - "D:/Projects:/Code/Projects:ro"
+      #
+      # Linux / macOS Examples:
+      # - "/home/user/documents:/Documents:ro"
+      # - "/home/user/pictures:/Pictures:ro"
+      # - "/home/user/projects:/Projects:ro"

@@ -1,0 +1,36 @@
+services:
+  autobackup-hub:
+    build: .
+    container_name: autobackup-hub
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - CONFIG_DIR=/config
+      - RCLONE_CONFIG=/config/rclone.conf
+    volumes:
+      # Persistent config storage
+      - ./config:/config
+      # Live Code Mounts (Reflect source updates immediately)
+      - ./server:/app/server:ro
+      - ./public:/app/public:ro
+      # Mount docker-compose.yml so container can parse volume mounts
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+
+      # ── Full Drive Access (for "Add Source Folder" UI feature) ──────────────
+      # These give the container read-only access to all paths on each drive.
+      # New source folders added via the UI will map through /hostfs/<DriveLetter>/.
+      - C:/:/hostfs/C:ro
+      - F:/:/hostfs/F:ro
+
+      # ── Laptop Volume Mounts for Backup Sources (Read-Only) ─────────────────
+      - C:/Users/Dr/Documents/Important:/Documents/Important:ro
+      - C:/Users/Dr/Downloads/product-catalog-node_5_1:/Work/MST:ro
+      - C:/Users/Dr/OneDrive/Documents:/Documents/Others:ro
+      - C:/Users/Dr/OneDrive/Pictures:/Pictures:ro
+      - C:/Users/Dr/Downloads/esp32_sniffer:/Code/espsniffer:ro
+      - C:/Users/Dr/Downloads/Solar Eclipse (v1.9.0):/Games/Pokemon/SolarEclipse:ro
+      - C:/Users/Dr/Downloads/Quran_MergeWords:/Work/QuranMerge:ro
+      - F:/autobackup:/Code/autobackup:ro
+      - F:/interwlancommunicator:/Code/wlancomm:ro

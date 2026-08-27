@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoBackup Hub - Multi-Cloud Automated Sync</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300f2fe' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21.2 15 18 11.8A5.5 5.5 0 1 0 10.6 6'/><path d='M13 18H5a3 3 0 0 1 0-6 4.5 4.5 0 0 1 3.9-2.3 4 4 0 0 1 7.5 1.5'/><polyline points='16 19 19 22 22 19'/><line x1='16' y1='13' x2='19' y2='22'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.2 15 18 11.8A5.5 5.5 0 1 0 10.6 6"></path>
+          <path d="M13 18H5a3 3 0 0 1 0-6 4.5 4.5 0 0 1 3.9-2.3 4 4 0 0 1 7.5 1.5"></path>
+          <polyline points="16 19 19 22 22 19"></polyline>
+          <line x1="19" y1="13" x2="19" y2="22"></line>
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title">AutoBackup <span class="accent-text">Hub</span></h1>
+        <p class="brand-subtitle">Automated Multi-Cloud File Synchronization Engine</p>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <div class="status-badge" id="system-status-badge">
+        <span class="pulse-dot"></span> System Connected
+      </div>
+      <button class="btn btn-outline hidden" id="btn-lock-dashboard" title="Lock Web UI with Security PIN">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        Lock UI
+      </button>
+      <button class="btn btn-outline" id="btn-open-transfer">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+        Transfer
+      </button>
+      <button class="btn btn-outline" id="btn-open-remotes">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>
+        Manage Remotes
+      </button>
+      <button class="btn btn-primary" id="btn-open-new-task">
+        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        New Backup Task
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="dashboard-grid">
+
+    <!-- Active Cloud Storage Capacity & Connection Health Alerts Banner -->
+    <section id="storage-alerts-container" class="hidden" style="grid-column: 1 / -1; margin-bottom: 1rem;">
+      <!-- Dynamically rendered capacity/health warnings -->
+    </section>
+
+    <!-- Stat Metrics Summary -->
+    <section class="stats-row">
+      <div class="stat-card">
+        <div class="stat-icon icon-cyan">
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        </div>
+        <div class="stat-info">
+          <span class="stat-label">Active Tasks</span>
+          <h3 class="stat-value" id="stat-active-tasks">0</h3>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon icon-purple">
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path></svg>
+        </div>
+        <div class="stat-info">
+          <span class="stat-label">Cloud Remotes</span>
+          <h3 class="stat-value" id="stat-remotes-count">0</h3>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon icon-emerald">
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+        </div>
+        <div class="stat-info">
+          <span class="stat-label">Total Sync Runs</span>
+          <h3 class="stat-value" id="stat-total-runs">0</h3>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon icon-amber">
+          <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        </div>
+        <div class="stat-info">
+          <span class="stat-label">Next Scheduled Run</span>
+          <h3 class="stat-value text-sm" id="stat-next-run">--</h3>
+        </div>
+      </div>
+    </section>
+
+    <!-- Container Structure Explorer (root/) -->
+    <section class="glass-card explorer-section">
+      <div class="card-header">
+        <div>
+          <h2>Container Volume Explorer (<code class="accent-text">root/</code>)</h2>
+          <p class="section-desc">Unified directory tree of all mounted folders. Add new source folders instantly without editing docker-compose.</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-sm btn-primary" id="btn-add-source" title="Add a new source folder without editing docker-compose.yml">
+            <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            Add Source Folder
+          </button>
+          <button class="btn btn-sm btn-outline" id="btn-dashboard-expand-tree">Expand All</button>
+          <button class="btn btn-sm btn-outline" id="btn-dashboard-collapse-tree">Collapse All</button>
+        </div>
+      </div>
+
+      <div class="dashboard-tree-container" id="dashboard-container-tree">
+        <div class="tree-loading">Detecting mounted containers...</div>
+      </div>
+    </section>
+
+    <!-- Cloud Remote Connection Health Diagnostics -->
+    <section class="glass-card status-section">
+      <div class="card-header">
+        <div>
+          <h2>Cloud Remote Connections &amp; Health Status</h2>
+          <p class="section-desc">View and test active credentials for Google Drive, OneDrive, Dropbox, TeraBox, Mega, etc.</p>
+        </div>
+        <button class="btn btn-sm btn-outline" id="btn-test-all-remotes">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+          Test All Connections
+        </button>
+      </div>
+
+      <div class="remotes-status-grid" id="remotes-status-container">
+        <div class="empty-state" id="status-empty">
+          <p>No cloud remotes detected in config. <button class="btn btn-sm btn-primary btn-trigger-remotes" style="margin-left:0.5rem; vertical-align:middle;">☁️ Manage Remotes</button></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Active Background Transfers & Downloads Banner -->
+    <section id="active-transfers-container" class="glass-card active-transfers-section hidden" style="margin-bottom: 1.5rem; border-color: var(--accent-primary); box-shadow: 0 0 20px rgba(0, 242, 254, 0.25);">
+      <!-- Dynamically rendered active transfer cards -->
+    </section>
+
+    <!-- Main Content Area split into Tasks List & Execution Log -->
+    <div class="content-split">
+
+      <!-- Left: Backup Tasks List -->
+      <section class="glass-card tasks-section">
+        <div class="card-header" style="display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <h2>Backup &amp; Sync Tasks</h2>
+            <span class="badge" id="tasks-badge-count">0 Tasks</span>
+          </div>
+          <select id="tasks-remote-filter" class="filter-select">
+            <option value="all">☁️ All Services</option>
+          </select>
+        </div>
+
+        <div class="tasks-list" id="tasks-container">
+          <div class="empty-state" id="tasks-empty">
+            <svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.4">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            <p>No backup tasks created yet.</p>
+            <button class="btn btn-sm btn-primary" id="btn-empty-add-task">Create First Task</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Real-time Live Log Console -->
+      <section class="glass-card console-section">
+        <div class="card-header">
+          <div class="console-title">
+            <span class="live-indicator"></span>
+            <h2>Live Execution Log</h2>
+          </div>
+          <button class="btn-icon" id="btn-clear-log" title="Clear Console Log">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          </button>
+        </div>
+
+        <div class="console-window" id="console-output">
+          <div class="console-line system">[System] Connected to AutoBackup Hub. Ready for backup jobs.</div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Bottom Section: Execution History Log Table -->
+    <section class="glass-card history-section">
+      <div class="card-header history-header-controls" style="display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+        <h2>Recent Execution History</h2>
+        
+        <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+          <input type="text" id="history-search-input" class="filter-input" placeholder="🔍 Search logs..." style="width: 180px;">
+          
+          <select id="history-remote-filter" class="filter-select">
+            <option value="all">☁️ All Services</option>
+          </select>
+
+          <select id="history-status-filter" class="filter-select">
+            <option value="all">All Statuses</option>
+            <option value="success">Success Only</option>
+            <option value="failed">Failed Only</option>
+            <option value="running">Running Only</option>
+            <option value="stopped">Stopped Only</option>
+          </select>
+
+          <button class="btn btn-sm btn-outline" id="btn-refresh-logs">Refresh History</button>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Task Name</th>
+              <th>Status</th>
+              <th>Transferred</th>
+              <th>Start Time</th>
+              <th>Duration / End</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="history-table-body">
+            <tr>
+              <td colspan="6" class="text-center opacity-60">No execution logs found.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div class="history-pagination" id="history-pagination" style="display:none; padding: 0.75rem 0 0.25rem; display:flex; gap:0.5rem; align-items:center; justify-content:flex-end;">
+        <span id="history-page-info" style="font-size:0.8rem; color:#64748b; margin-right:0.5rem;"></span>
+        <button class="btn btn-sm btn-outline" id="btn-logs-prev" disabled>← Prev</button>
+        <button class="btn btn-sm btn-outline" id="btn-logs-next">Next →</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Modal: Create / Edit Task -->
+  <div class="modal-overlay" id="modal-task">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-task-title">Create Backup Task</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <form id="form-task">
+        <input type="hidden" id="task-id">
+
+        <div class="form-group">
+          <label>Task Name</label>
+          <input type="text" id="task-name" placeholder="e.g. Monthly Backup Day to Google Drive" required>
+        </div>
+
+        <!-- Dynamic Tree View Selector for Local Source Containers -->
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+            <label>Select Source Container Folders (<code class="accent-text">root/</code> Tree View)</label>
+            <button type="button" class="btn-text-link" id="btn-toggle-custom-source">Manual Text Input...</button>
+          </div>
+
+          <!-- Tree View Component Widget -->
+          <div id="task-tree-wrapper" class="tree-widget">
+            <div class="tree-toolbar">
+              <div class="tree-search-box">
+                <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input type="text" id="tree-search-input" placeholder="Filter containers (e.g. Code, Documents)...">
+              </div>
+              <div class="tree-toolbar-actions">
+                <button type="button" class="btn-tree-action" id="btn-tree-select-all">Select All</button>
+                <button type="button" class="btn-tree-action" id="btn-tree-deselect-all">Deselect</button>
+                <button type="button" class="btn-tree-action" id="btn-tree-expand-all">Expand</button>
+                <button type="button" class="btn-tree-action" id="btn-tree-collapse-all">Collapse</button>
+              </div>
+            </div>
+
+            <div class="tree-body" id="modal-container-tree">
+              <!-- Rendered Tree View with root/ -->
+              <div class="tree-loading">Loading container hierarchy...</div>
+            </div>
+
+            <div class="tree-footer">
+              <span class="tree-count-badge" id="modal-selected-count">0 container(s) selected</span>
+              <span class="form-help">Checked containers will back up to the same destination cloud folder.</span>
+            </div>
+          </div>
+
+          <input type="text" id="task-source-input" class="hidden" placeholder="e.g. /Documents/Important, /Code/autobackup">
+          <select id="task-source-select" class="hidden"></select>
+        </div>
+
+        <div class="grid-2col">
+          <div class="form-group">
+            <label>Destination Cloud Remote</label>
+            <select id="task-remote" required>
+              <option value="">Select a connected remote...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Remote Folder Path</label>
+            <input type="text" id="task-target-path" placeholder="e.g. Backups/Documents (optional)">
+          </div>
+        </div>
+
+        <div class="grid-3col">
+          <div class="form-group">
+            <label>Transfer Mode</label>
+            <select id="task-mode">
+              <option value="copy">Copy (Upload new &amp; modified files)</option>
+              <option value="sync">Sync (Mirror exact directory state)</option>
+              <option value="move">Move (Upload and delete local file)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>File Conflict Resolution</label>
+            <select id="task-conflict">
+              <option value="smart">Smart Update (Update if modified/newer, skip identical)</option>
+              <option value="overwrite">Always Overwrite / Replace (Force upload existing)</option>
+              <option value="skip">Always Skip Existing (Never replace files on cloud)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Speed / Bandwidth Limit (--bwlimit)</label>
+            <select id="task-bw-limit">
+              <option value="">Unlimited (Maximum Speed)</option>
+              <option value="1M">1 MB/s (Low Impact)</option>
+              <option value="2M">2 MB/s</option>
+              <option value="5M">5 MB/s (Recommended)</option>
+              <option value="10M">10 MB/s</option>
+              <option value="50M">50 MB/s</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid-2col">
+          <div class="form-group">
+            <label>Schedule Interval &amp; Priority</label>
+            <select id="task-schedule-preset">
+              <option value="last_friday">🏆 Backup Day (Last Friday - Critical Priority)</option>
+              <option value="monthly">📅 Monthly (1st of Month - High Priority)</option>
+              <option value="weekly">📅 Weekly (Every Sunday - Medium Priority)</option>
+              <option value="daily">📅 Daily (Runs Daily / On Laptop Wakeup - Low Priority)</option>
+              <option value="0 */6 * * *">Every 6 Hours (Normal Priority)</option>
+              <option value="0 * * * *">Every Hour (Normal Priority)</option>
+              <option value="*/15 * * * *">Every 15 Minutes (Normal Priority)</option>
+              <option value="custom">Custom Cron Expression</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Task Priority Level</label>
+            <select id="task-priority">
+              <option value="critical">Critical (Backup Day - Top Priority)</option>
+              <option value="high">High (Monthly Backups)</option>
+              <option value="medium">Medium (Weekly Backups)</option>
+              <option value="low">Low (Daily / Laptop Catchups)</option>
+              <option value="normal">Normal / Default</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group hidden" id="group-custom-cron">
+          <label>Custom Cron Expression</label>
+          <input type="text" id="task-cron" value="last_friday" placeholder="e.g. */30 * * * *">
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline modal-close">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Cloud Remotes Manager & Settings -->
+  <div class="modal-overlay" id="modal-remotes">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3>System Settings &amp; Remotes</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+
+      <!-- Segmented Tab Navigation -->
+      <div class="modal-tabs-header">
+        <button type="button" class="modal-tab-btn active" id="tab-btn-settings-remotes" onclick="switchSettingsModalTab('remotes')">
+          ☁️ Storage Remotes
+        </button>
+        <button type="button" class="modal-tab-btn" id="tab-btn-settings-notifications" onclick="switchSettingsModalTab('notifications')">
+          📱 Mobile Push Notifications
+        </button>
+        <button type="button" class="modal-tab-btn" id="tab-btn-settings-security" onclick="switchSettingsModalTab('security')">
+          🔒 Dashboard Security PIN
+        </button>
+      </div>
+
+      <div class="remotes-body">
+        <!-- Tab 1: Storage Remotes Manager -->
+        <div id="tab-settings-remotes">
+          <div class="remotes-list-section">
+            <h4>Configured Storage Remotes</h4>
+            <div id="remotes-active-list" class="remotes-chips">
+              <span class="opacity-60 text-sm">No cloud remotes configured yet.</span>
+            </div>
+          </div>
+
+          <hr class="divider" style="margin: 1.25rem 0;">
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+            <h4 style="margin:0;">Add / Connect Cloud Remote</h4>
+            <div style="display:flex; gap:0.5rem;">
+              <button type="button" class="btn btn-sm btn-outline active" id="tab-remote-form-btn" onclick="switchRemoteAddTab('form')">Guided Form / OAuth</button>
+              <button type="button" class="btn btn-sm btn-outline" id="tab-remote-raw-btn" onclick="switchRemoteAddTab('raw')">Paste rclone.conf Block</button>
+            </div>
+          </div>
+
+          <!-- Tab 1 Sub-Tab: Guided Form Setup & OAuth -->
+          <div id="remote-tab-form">
+            <form id="form-remote">
+              <div class="grid-2col">
+                <div class="form-group">
+                  <label>Remote Name (identifier without spaces)</label>
+                  <input type="text" id="remote-name" placeholder="e.g. gdrive, myonedrive, abdul_pCloud" required>
+                </div>
+                <div class="form-group">
+                  <label>Provider Type</label>
+                  <select id="remote-type" required>
+                    <option value="drive">Google Drive</option>
+                    <option value="onedrive">Microsoft OneDrive</option>
+                    <option value="dropbox">Dropbox</option>
+                    <option value="pcloud">pCloud</option>
+                    <option value="box">Box.com</option>
+                    <option value="webdav">TeraBox / WebDAV</option>
+                    <option value="mega">Mega.nz</option>
+                    <option value="s3">Amazon S3 / Compatible</option>
+                  </select>
+                </div>
+              </div>
+
+              <div id="remote-dynamic-fields">
+              </div>
+
+              <div class="modal-footer">
+                <button type="button" class="btn btn-outline modal-close">Close</button>
+                <button type="submit" class="btn btn-primary" id="btn-save-remote">Add &amp; Verify Remote</button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Tab 1 Sub-Tab: Raw rclone.conf Block Import -->
+          <div id="remote-tab-raw" class="hidden">
+            <p style="font-size:0.83rem; color:#94a3b8; margin-bottom:0.75rem;">
+              Paste an existing <code>[remote_name]</code> configuration block directly from <code>rclone config</code> or another device.
+            </p>
+            <div class="form-group">
+              <label>Raw rclone.conf Section Block</label>
+              <textarea id="raw-rclone-config-text" rows="7" style="background:#090d16; border:1px solid rgba(255,255,255,0.2); color:#a7f3d0; padding:0.75rem; border-radius:6px; font-family:monospace; width:100%; font-size:0.83rem;" placeholder="[abdul_pCloud]&#10;type = pcloud&#10;token = {&quot;access_token&quot;:&quot;...&quot;}"></textarea>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline modal-close">Close</button>
+              <button type="button" class="btn btn-primary" id="btn-import-raw-remote">Import Remote Block &amp; Verify</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Mobile Push Notifications -->
+        <div id="tab-settings-notifications" class="hidden">
+          <div class="notifications-settings-section" style="background: rgba(0, 242, 254, 0.04); border: 1px solid rgba(0, 242, 254, 0.2); border-radius: var(--radius-sm); padding: 1rem;">
+            <h4 style="color: #00f2fe; display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 1rem;">
+              <span>📱</span> Mobile &amp; Phone Push Alerts
+            </h4>
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 1rem;">Link AutoBackup Hub to your phone to receive instant push alerts when backups run or fail.</p>
+
+            <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+              <!-- 1. ntfy.sh Mobile Push -->
+              <div style="background: rgba(15,23,42,0.7); padding: 0.75rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                <label style="font-size: 0.83rem; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.3rem;">
+                  📲 1. ntfy.sh Direct Phone Push (Recommended - Free, No Account Needed)
+                </label>
+                <span style="font-size: 0.75rem; color: #64748b; display: block; margin-bottom: 0.5rem;">
+                  1. Install free <strong>ntfy</strong> app on your iPhone (App Store) or Android (Play Store).<br>
+                  2. Enter a unique topic name below and subscribe to it in your phone app:
+                </span>
+                <div style="display: flex; gap: 0.5rem;">
+                  <input type="text" id="ntfy-topic-input" placeholder="e.g. autobackup-hub-dr-phone" style="flex: 1; font-size: 0.82rem; padding: 0.4rem 0.65rem; border-radius: 4px; background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff;">
+                  <button type="button" class="btn btn-sm btn-primary" id="btn-save-ntfy">Save Topic</button>
+                  <button type="button" class="btn btn-sm btn-outline" id="btn-test-ntfy" style="color: #38bdf8; border-color: rgba(56,189,248,0.4);" title="Send test push notification to phone">🧪 Send Test</button>
+                </div>
+              </div>
+
+              <!-- 2. Discord Webhook -->
+              <div style="background: rgba(15,23,42,0.7); padding: 0.75rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                <label style="font-size: 0.83rem; font-weight: 700; color: #818cf8; display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.3rem;">
+                  💬 2. Discord Mobile App Webhook
+                </label>
+                <span style="font-size: 0.75rem; color: #64748b; display: block; margin-bottom: 0.5rem;">Paste your Discord channel Webhook URL to receive glanceable alert cards on your Discord app:</span>
+                <div style="display: flex; gap: 0.5rem;">
+                  <input type="url" id="discord-webhook-input" placeholder="https://discord.com/api/webhooks/..." style="flex: 1; font-size: 0.82rem; padding: 0.4rem 0.65rem; border-radius: 4px; background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff;">
+                  <button type="button" class="btn btn-sm btn-primary" id="btn-save-discord">Save Webhook</button>
+                  <button type="button" class="btn btn-sm btn-outline" id="btn-test-discord" style="color: #818cf8; border-color: rgba(129,140,248,0.4);" title="Send test backup alert card to Discord">🧪 Send Test</button>
+                </div>
+                <div style="margin-top: 0.5rem; display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 0.4rem 0.6rem; border-radius: 6px;">
+                  <span style="font-size: 0.73rem; color: #94a3b8;">Automated 30-Day Executive Report runs monthly (1st of month at 09:00 AM).</span>
+                  <button type="button" class="btn btn-sm btn-outline" id="btn-trigger-monthly-report" style="font-size: 0.73rem; color: #818cf8; border-color: rgba(129,140,248,0.4);">
+                    📊 Send Test Monthly Report Now
+                  </button>
+                </div>
+              </div>
+
+              <!-- 3. Telegram Bot -->
+              <div style="background: rgba(15,23,42,0.7); padding: 0.75rem 0.85rem; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                <label style="font-size: 0.83rem; font-weight: 700; color: #22d3ee; display: flex; align-items: center; gap: 0.3rem; margin-bottom: 0.3rem;">
+                  ✈️ 3. Telegram Bot Push
+                </label>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 90px 100px; gap: 0.5rem; margin-top: 0.4rem;">
+                  <input type="text" id="telegram-bot-token-input" placeholder="Bot Token (from @BotFather)" style="font-size: 0.82rem; padding: 0.4rem 0.65rem; border-radius: 4px; background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff;">
+                  <input type="text" id="telegram-chat-id-input" placeholder="Chat ID (from @userinfobot)" style="font-size: 0.82rem; padding: 0.4rem 0.65rem; border-radius: 4px; background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff;">
+                  <button type="button" class="btn btn-sm btn-primary" id="btn-save-telegram">Save</button>
+                  <button type="button" class="btn btn-sm btn-outline" id="btn-test-telegram" style="color: #22d3ee; border-color: rgba(34,211,238,0.4);" title="Send test message to Telegram bot">🧪 Send Test</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Security PIN Setup Section -->
+        <div id="tab-settings-security" class="hidden">
+          <div class="security-settings-section" style="background: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: var(--radius-sm); padding: 1rem;">
+            <h4 style="color: #a78bfa; display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; font-size: 1rem;">
+              <span>🔒</span> Web UI Dashboard Security PIN
+            </h4>
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 1rem;">Protect your AutoBackup Hub web dashboard with a numeric Security PIN (4 to 8 digits).</p>
+            
+            <div style="display: flex; gap: 0.6rem; align-items: center;">
+              <input type="text" id="pin-setup-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="Enter new numeric Security PIN (or leave blank to disable)" style="flex: 1; font-size: 0.85rem; padding: 0.45rem 0.75rem; border-radius: 6px; background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff; -webkit-text-security: disc;">
+              <input type="text" id="pin-current-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="Current PIN" style="width: 120px; font-size: 0.85rem; padding: 0.45rem 0.75rem; border-radius: 6px; background: rgba(15,23,42,0.9); border: 1px solid rgba(255,255,255,0.15); color: #fff; -webkit-text-security: disc;">
+              <button type="button" class="btn btn-sm btn-primary" id="btn-save-pin" style="background: linear-gradient(135deg, #8b5cf6, #3b82f6); padding: 0.45rem 0.9rem;">
+                Update PIN
+              </button>
+            </div>
+            <span style="font-size: 0.75rem; color: #64748b; display: block; margin-top: 0.6rem;" id="pin-status-text">Status: PIN Lock is currently Disabled</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Log Detail Viewer & Text File Downloader -->
+  <div class="modal-overlay" id="modal-log-detail">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3 id="log-detail-title">Execution Log Detail</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+          <span id="log-detail-meta" style="font-size:0.85rem; color:#94a3b8;">Task details...</span>
+          <button class="btn btn-sm btn-primary" id="btn-download-log-txt">
+            💾 Save Log as Text File (.txt)
+          </button>
+        </div>
+        <pre id="log-detail-content" style="background:#090d16; color:#a7f3d0; padding:1rem; border-radius:8px; font-family:Consolas, monospace; font-size:0.82rem; max-height:400px; overflow-y:auto; border:1px solid rgba(255,255,255,0.1); white-space:pre-wrap; word-break:break-all;"></pre>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline modal-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Transfer (Cloud-to-Device / Cloud-to-Cloud) -->
+  <div class="modal-overlay" id="modal-transfer">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3>
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle; margin-right:0.4rem;"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+          Transfer Files
+        </h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+
+      <div style="padding: 0 0.25rem;">
+        <!-- Transfer type tabs -->
+        <div class="transfer-tab-row" id="transfer-tabs">
+          <button class="transfer-tab active" id="tab-cloud-to-device" onclick="switchTransferTab('device')">
+            💾 Cloud → Device (Download)
+          </button>
+          <button class="transfer-tab" id="tab-cloud-to-cloud" onclick="switchTransferTab('cloud')">
+            ☁️ Cloud → Cloud
+          </button>
+        </div>
+
+        <!-- Cloud → Device panel -->
+        <div id="transfer-panel-device" class="transfer-panel">
+          <div class="form-group">
+            <label>Source Remote</label>
+            <select id="transfer-src-remote-device">
+              <option value="">Select remote...</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Browse Remote &amp; Select File(s) / Folder(s)</label>
+            <div class="cloud-browser" id="cloud-browser-device">
+              <div class="cloud-browser-bar">
+                <span class="cloud-browser-path" id="cloud-browser-path-device">Select a remote above to browse</span>
+                <button type="button" class="btn btn-sm btn-outline" id="btn-cloud-select-all-device">Select All</button>
+                <button type="button" class="btn btn-sm btn-outline" id="btn-cloud-browser-up-device" disabled>↑ Up</button>
+              </div>
+              <div class="cloud-browser-list" id="cloud-browser-list-device">
+                <div class="cloud-browser-empty">Select a remote above to start browsing.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group" id="transfer-file-info-device" style="display:none;">
+            <label>Selected File(s) / Folder(s)</label>
+            <div class="selected-path-display" id="transfer-selected-path-device">—</div>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline modal-close">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btn-do-download" disabled>
+              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              Download to Device
+            </button>
+          </div>
+        </div>
+
+        <!-- Cloud → Cloud panel -->
+        <div id="transfer-panel-cloud" class="transfer-panel hidden">
+          <div class="grid-2col">
+            <div class="form-group">
+              <label>Source Remote</label>
+              <select id="transfer-src-remote-cloud">
+                <option value="">Select source remote...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Source Path(s) (optional)</label>
+              <input type="text" id="transfer-src-path-cloud" placeholder="e.g. Documents/Photos, Code/Project">
+            </div>
+          </div>
+
+          <!-- Source file browser -->
+          <div class="form-group">
+            <label>Browse Source Remote</label>
+            <div class="cloud-browser" id="cloud-browser-cloud-src">
+              <div class="cloud-browser-bar">
+                <span class="cloud-browser-path" id="cloud-browser-path-cloud-src">Select a source remote above</span>
+                <button type="button" class="btn btn-sm btn-outline" id="btn-cloud-select-all-cloud-src">Select All</button>
+                <button type="button" class="btn btn-sm btn-outline" id="btn-cloud-browser-up-cloud-src" disabled>↑ Up</button>
+              </div>
+              <div class="cloud-browser-list" id="cloud-browser-list-cloud-src">
+                <div class="cloud-browser-empty">Select a remote above to browse.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid-2col">
+            <div class="form-group">
+              <label>Destination Remote</label>
+              <select id="transfer-dst-remote-cloud">
+                <option value="">Select destination remote...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Destination Path (optional)</label>
+              <input type="text" id="transfer-dst-path-cloud" placeholder="e.g. Backups/FromOtherCloud">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Transfer Mode</label>
+            <select id="transfer-mode-cloud">
+              <option value="copy">Copy (keep source intact)</option>
+              <option value="sync">Sync (mirror, delete extra on dest)</option>
+              <option value="move">Move (delete from source after transfer)</option>
+            </select>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline modal-close">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btn-do-cloud-transfer">
+              <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4H14"></path></svg>
+              Start Cloud Transfer
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Source Folder -->
+  <div class="modal-overlay" id="modal-add-source">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle; margin-right:0.4rem;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
+          Add Source Folder
+        </h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+
+      <p style="font-size:0.83rem; color:#64748b; margin-bottom:1rem;">Add local folders as backup sources. Select multiple folders below or enter Windows paths.</p>
+
+      <div class="form-group">
+        <label>Friendly Name (Optional)</label>
+        <input type="text" id="source-name-input" placeholder="e.g. My New Project, Holiday Photos 2025">
+      </div>
+
+      <div class="form-group">
+        <label>Windows Path(s) <span style="color:#64748b; font-weight:400;">(e.g. C:\Users\Dr\NewFolder or F:\Projects)</span></label>
+        <input type="text" id="source-host-path-input" placeholder="C:\Users\Dr\Documents\NewProject">
+        <span class="form-help">Container mapping: <code class="accent-text" id="source-container-path-preview">/hostfs/C/Users/Dr/Documents/NewProject</code></span>
+      </div>
+
+      <div class="form-group">
+        <label>Or Browse to Pick Folder(s)</label>
+        <div class="folder-browser" id="folder-browser">
+          <div class="folder-browser-bar">
+            <span class="folder-browser-path" id="folder-browser-path">/hostfs</span>
+            <button type="button" class="btn btn-sm btn-outline" id="btn-folder-select-all">Select All</button>
+            <button type="button" class="btn btn-sm btn-outline" id="btn-folder-up" disabled>↑ Up</button>
+          </div>
+          <div class="folder-browser-list" id="folder-browser-list">
+            <div class="cloud-browser-empty">Loading drives...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline modal-close">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btn-save-source">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          Add Source Folder
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Security PIN Lock Overlay -->
+  <div class="modal-overlay" id="modal-pin-lock" style="z-index: 9999;">
+    <div class="modal-card" style="max-width: 380px; text-align: center; background: rgba(9, 13, 22, 0.95); border-color: rgba(139, 92, 246, 0.4); box-shadow: 0 0 50px rgba(139, 92, 246, 0.3);">
+      <div style="margin-bottom: 1rem;">
+        <div style="width: 56px; height: 56px; margin: 0 auto 1rem; border-radius: 50%; background: linear-gradient(135deg, rgba(139, 92, 246, 0.3), rgba(59, 130, 246, 0.3)); border: 1px solid rgba(139, 92, 246, 0.5); display: flex; align-items: center; justify-content: center; color: #a78bfa;">
+          <svg viewBox="0 0 24 24" width="28" height="28" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        </div>
+        <h3 style="font-family: var(--font-heading); font-size: 1.35rem; color: #fff; margin-bottom: 0.3rem;">AutoBackup Hub Locked</h3>
+        <p style="font-size: 0.82rem; color: #94a3b8;">Enter your numeric Security PIN to access the dashboard</p>
+      </div>
+
+      <form id="form-pin-unlock" onsubmit="handlePinUnlock(event)">
+        <div class="form-group" style="margin-bottom: 1.25rem;">
+          <input type="text" id="pin-unlock-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="••••" style="text-align: center; font-size: 1.6rem; letter-spacing: 8px; padding: 0.6rem; border-radius: 8px; background: rgba(15,23,42,0.9); border: 1px solid rgba(139, 92, 246, 0.5); color: #fff; width: 100%; -webkit-text-security: disc;" required>
+          <div id="pin-unlock-error" style="color: #f87171; font-size: 0.78rem; margin-top: 0.4rem;" class="hidden">Incorrect Security PIN</div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.7rem; background: linear-gradient(135deg, #8b5cf6, #3b82f6); font-weight: 700; font-size: 0.95rem;">
+          Unlock Dashboard
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
