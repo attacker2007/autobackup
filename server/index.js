@@ -848,6 +848,66 @@ app.post('/api/remotes', async (req, res) => {
 });
 
 /**
+ * Update token and reconnect an existing remote
+ */
+app.post('/api/remotes/:name/token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    const remoteName = req.params.name;
+    if (!token) {
+      return res.status(400).json({ error: 'Token string or JSON is required' });
+    }
+
+    if (!fs.existsSync(rclone.RCLONE_CONFIG_PATH)) {
+      return res.status(404).json({ error: 'rclone.conf not found' });
+    }
+
+    const content = fs.readFileSync(rclone.RCLONE_CONFIG_PATH, 'utf8');
+    const lines = content.split('\n');
+    let inSection = false;
+    let tokenUpdated = false;
+    const newLines = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        inSection = (trimmed === `[${remoteName}]`);
+      }
+
+      if (inSection && trimmed.startsWith('token =')) {
+        newLines.push(`token = ${token.trim()}`);
+        tokenUpdated = true;
+      } else {
+        newLines.push(line);
+      }
+    }
+
+    if (!tokenUpdated) {
+      const finalLines = [];
+      for (const line of newLines) {
+        finalLines.push(line);
+        if (line.trim() === `[${remoteName}]`) {
+          finalLines.push(`token = ${token.trim()}`);
+        }
+      }
+      rclone.sanitizeRcloneConfigFile();
+      fs.writeFileSync(rclone.RCLONE_CONFIG_PATH, finalLines.join('\n'), 'utf8');
+    } else {
+      fs.writeFileSync(rclone.RCLONE_CONFIG_PATH, newLines.join('\n'), 'utf8');
+      rclone.sanitizeRcloneConfigFile();
+    }
+
+    rclone.invalidateListRemotesCache();
+    const testResult = await rclone.testRemoteConnection(remoteName);
+    res.json({ success: true, testResult });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * Import raw rclone.conf section block directly
  * Body: { configText: "[remote_name]\ntype=...\ntoken=..." }
  */

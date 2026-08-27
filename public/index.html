@@ -844,6 +844,51 @@
     </div>
   </div>
 
+  <!-- Modal: Re-Authorize / Reconnect Cloud Remote -->
+  <div class="modal-overlay" id="modal-reauth-remote">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>
+          <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle; margin-right:0.4rem;"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Re-Authorize Cloud Remote: <span id="reauth-remote-name-title" class="accent-text"></span>
+        </h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+
+      <input type="hidden" id="reauth-remote-name">
+      <input type="hidden" id="reauth-remote-type">
+
+      <div style="padding: 0.75rem; background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; margin-bottom: 1rem;">
+        <div style="font-size: 0.82rem; font-weight: 700; color: #38bdf8; margin-bottom: 0.35rem;">
+          🔑 Generate New OAuth Token
+        </div>
+        <div style="font-size: 0.76rem; color: #94a3b8; margin-bottom: 0.5rem;">
+          Run this command in your host terminal (PowerShell / Command Prompt / Terminal) to authorize:
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center; background: rgba(0,0,0,0.4); padding: 0.45rem 0.65rem; border-radius: 6px; border: 1px solid rgba(0,242,254,0.3); margin-bottom: 0.5rem;">
+          <code id="reauth-cmd-code" style="color: #00f2fe; font-family: monospace; font-size: 0.85rem; flex: 1;">rclone authorize "drive"</code>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-copy-reauth-cmd" onclick="copyCmdToClipboard(document.getElementById('reauth-cmd-code').innerText, 'btn-copy-reauth-cmd')">
+            📋 Copy
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Paste New Token JSON / Access Token</label>
+        <textarea id="reauth-token-input" style="background: #090d16; border: 1px solid rgba(255,255,255,0.2); color: #a7f3d0; padding: 0.5rem; border-radius: 4px; width: 100%; font-family: monospace;" rows="4" placeholder='{"access_token":"...","token_type":"bearer","refresh_token":"..."}' required></textarea>
+        <span class="form-help">Paste the output returned by the <code>rclone authorize</code> command.</span>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline modal-close">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btn-save-reauth" onclick="saveReauthorizedToken()">
+          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><path d="M20 6L9 17l-5-5"/></svg>
+          Update &amp; Reconnect Remote
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Security PIN Lock Overlay -->
   <div class="modal-overlay" id="modal-pin-lock" style="z-index: 9999;">
     <div class="modal-card" style="max-width: 380px; text-align: center; background: rgba(9, 13, 22, 0.95); border-color: rgba(139, 92, 246, 0.4); box-shadow: 0 0 50px rgba(139, 92, 246, 0.3);">

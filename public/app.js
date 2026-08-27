@@ -721,12 +721,18 @@ function renderRemotesModalList() {
     return;
   }
 
-  container.innerHTML = currentRemotes.map(remote => `
-    <div class="remote-chip">
-      <span>☁️ ${escapeHtml(remote)}</span>
-      <span class="chip-del" onclick="deleteRemote('${escapeHtml(remote)}')">&times;</span>
-    </div>
-  `).join('');
+  container.innerHTML = currentRemotes.map(remote => {
+    const detail = remotesDetails.find(d => d.name === remote) || { type: 'drive' };
+    return `
+      <div class="remote-chip" style="display: flex; align-items: center; gap: 0.5rem;">
+        <span>☁️ ${escapeHtml(remote)}</span>
+        <button type="button" class="btn btn-sm btn-outline" style="font-size: 0.68rem; padding: 0.1rem 0.35rem; color: #38bdf8; border-color: rgba(0,242,254,0.3);" onclick="openReauthRemoteModal('${escapeHtml(remote)}', '${escapeHtml(detail.type)}')">
+          🔄 Re-Auth
+        </button>
+        <span class="chip-del" onclick="deleteRemote('${escapeHtml(remote)}')" title="Delete Remote">&times;</span>
+      </div>
+    `;
+  }).join('');
 }
 
 function renderRemotesStatusGrid() {
@@ -743,6 +749,7 @@ function renderRemotesStatusGrid() {
 
     let badgeHtml = '<span class="status-badge-ok" style="background: rgba(255,255,255,0.05); color: #94a3b8; border-color: rgba(255,255,255,0.1);">UNTESTED</span>';
     let detailText = 'Click "Test Connection" to verify authentication and latency.';
+    let isAuthError = false;
 
     if (status) {
       if (status.testing) {
@@ -752,7 +759,8 @@ function renderRemotesStatusGrid() {
         badgeHtml = `<span class="status-badge-ok">CONNECTED (${status.latencyMs}ms)</span>`;
         detailText = status.info || 'Connection established successfully.';
       } else {
-        badgeHtml = '<span class="status-badge-err">⛔ READ RESTRICTED</span>';
+        isAuthError = true;
+        badgeHtml = '<span class="status-badge-err">⛔ TOKEN EXPIRED / ERROR</span>';
         detailText = status.error || 'Authentication error (e.g. invalid OAuth token). Read & transfer from this source is blocked.';
       }
     }
@@ -781,10 +789,16 @@ function renderRemotesStatusGrid() {
     } else if (status && status.success === false) {
       quotaHtml = `
         <div style="margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: #fb7185;">
-          ⚠️ Capacity unavailable: Authentication token expired (Error 2094). Click "Manage Remotes" to re-authorize.
+          ⚠️ Authentication token expired or revoked. Click "Re-Authorize" below to refresh token.
         </div>
       `;
     }
+
+    const reauthBtnHtml = isAuthError ? `
+      <button class="btn btn-sm btn-primary" onclick="openReauthRemoteModal('${escapeHtml(remoteName)}', '${escapeHtml(detail.type)}')">
+        🔄 Re-Authorize
+      </button>
+    ` : '';
 
     return `
       <div class="remote-status-card">
@@ -795,9 +809,10 @@ function renderRemotesStatusGrid() {
           </div>
           ${badgeHtml}
         </div>
-        <div class="remote-detail-text">${escapeHtml(detailText)}</div>
+        <div class="remote-detail-text" style="word-break: break-word;">${escapeHtml(detailText)}</div>
         ${quotaHtml}
         <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+          ${reauthBtnHtml}
           <button class="btn btn-sm btn-outline" onclick="filterByRemoteService('${escapeHtml(remoteName)}')">
             🔍 Filter Jobs
           </button>
@@ -811,6 +826,71 @@ function renderRemotesStatusGrid() {
       </div>
     `;
   }).join('');
+}
+
+function openReauthRemoteModal(remoteName, remoteType = 'drive') {
+  const modal = document.getElementById('modal-reauth-remote');
+  if (!modal) return;
+
+  const titleEl = document.getElementById('reauth-remote-name-title');
+  const nameInput = document.getElementById('reauth-remote-name');
+  const typeInput = document.getElementById('reauth-remote-type');
+  const cmdEl = document.getElementById('reauth-cmd-code');
+  const tokenInput = document.getElementById('reauth-token-input');
+
+  if (titleEl) titleEl.textContent = remoteName;
+  if (nameInput) nameInput.value = remoteName;
+  if (typeInput) typeInput.value = remoteType;
+  if (tokenInput) tokenInput.value = '';
+
+  let cmd = `rclone authorize "${remoteType}"`;
+  if (remoteType === 'pcloud') {
+    cmd = `rclone authorize "pcloud" "hostname" "eapi.pcloud.com"`;
+  }
+  if (cmdEl) cmdEl.textContent = cmd;
+
+  modal.classList.add('active');
+}
+
+async function saveReauthorizedToken() {
+  const remoteName = document.getElementById('reauth-remote-name')?.value;
+  const token = document.getElementById('reauth-token-input')?.value.trim();
+  const btn = document.getElementById('btn-save-reauth');
+
+  if (!remoteName || !token) {
+    alert('Please paste the new token JSON or token string.');
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Updating & Testing Connection...';
+  }
+
+  try {
+    const res = await fetch(`/api/remotes/${encodeURIComponent(remoteName)}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const data = await res.json();
+
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to update remote token.');
+    }
+
+    alert(`✅ Remote "${remoteName}" successfully re-authorized and reconnected!`);
+    document.getElementById('modal-reauth-remote')?.classList.remove('active');
+    fetchRemotes(true);
+    testSingleRemote(remoteName);
+  } catch (err) {
+    alert('Failed to re-authorize: ' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Update & Reconnect Remote';
+    }
+  }
 }
 
 async function fetchSettings() {
@@ -1729,6 +1809,76 @@ function renderFolderBrowserList(items) {
 
     listEl.appendChild(row);
   });
+}
+
+function toggleSelectAllFolderBrowser() {
+  if (!folderBrowserState || !folderBrowserState.itemsCache) return;
+  if (!folderBrowserState.selectedPaths) folderBrowserState.selectedPaths = new Set();
+
+  const currentItems = folderBrowserState.itemsCache;
+  const allChecked = currentItems.every(item => folderBrowserState.selectedPaths.has(item.path));
+
+  currentItems.forEach(item => {
+    if (allChecked) {
+      folderBrowserState.selectedPaths.delete(item.path);
+    } else {
+      folderBrowserState.selectedPaths.add(item.path);
+    }
+  });
+
+  const listEl = document.getElementById('folder-browser-list');
+  if (listEl) {
+    listEl.querySelectorAll('.fb-item-checkbox').forEach(cb => {
+      cb.checked = !allChecked;
+    });
+  }
+
+  updateSourceModalButtonState();
+}
+
+function folderBrowserGoUp() {
+  const target = folderBrowserState.parentPath || (folderBrowserState.currentPath ? folderBrowserState.currentPath.replace(/\/[^\/]+$/, '') : null) || '/hostfs';
+  loadFolderBrowserDir(target);
+}
+
+// ─── Add Source Modal ────────────────────────────────────────────────────────
+
+function openAddSourceModal() {
+  const modal = document.getElementById('modal-add-source');
+  if (!modal) return;
+  modal.classList.add('active');
+
+  const nameInput = document.getElementById('source-name-input');
+  const pathInput = document.getElementById('source-host-path-input');
+  const preview = document.getElementById('source-container-path-preview');
+
+  if (nameInput) nameInput.value = '';
+  if (pathInput) pathInput.value = '';
+  if (preview) preview.textContent = '';
+
+  folderBrowserState.currentPath = '/hostfs';
+  folderBrowserState.history = [];
+  folderBrowserState.selectedPaths = new Set();
+  updateSourceModalButtonState();
+  loadFolderBrowserDir('/hostfs');
+
+  // Set up OS File Explorer Picker listener
+  const osPickerInput = document.getElementById('input-os-folder-picker');
+  if (osPickerInput) {
+    osPickerInput.onchange = (e) => {
+      const files = e.target.files;
+      if (files && files.length > 0) {
+        const firstFile = files[0];
+        const relPath = firstFile.webkitRelativePath || '';
+        const rootFolder = relPath.split('/')[0] || 'Selected Folder';
+
+        if (nameInput && !nameInput.value) nameInput.value = rootFolder;
+        if (pathInput && !pathInput.value) {
+          pathInput.value = `C:\\Users\\Dr\\Documents\\${rootFolder}`;
+        }
+      }
+    };
+  }
 }
 
 async function saveSourceFolder() {
