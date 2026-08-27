@@ -6,7 +6,7 @@
 [![Rclone Engine](https://img.shields.io/badge/Engine-Rclone-orange?logo=databricks&logoColor=white)](https://rclone.org)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green?logo=node.js&logoColor=white)](https://nodejs.org)
 
-**AutoBackup Hub** is a self-hosted, containerized multi-cloud backup and file synchronization manager with an interactive web dashboard. Powered by the high-performance **Rclone** engine, it allows you to automatically route, schedule, sync, and transfer files from your local machines (Windows, macOS, Linux) to cloud storage providers including **pCloud, Google Drive, Microsoft OneDrive, Dropbox, TeraBox, Box, Mega, and Amazon S3 / S3-compatible storage**.
+**AutoBackup Hub** is a self-hosted, containerized multi-cloud backup and file synchronization manager with an interactive web dashboard. Powered by the high-performance **Rclone** engine, it allows you to automatically route, schedule, sync, and transfer files from your local machines (Windows, macOS, Linux) to cloud storage providers including **Google Drive, Microsoft OneDrive, Dropbox, pCloud, TeraBox, Box, Mega, and Amazon S3 / S3-compatible storage**.
 
 ---
 
@@ -34,8 +34,16 @@ docker run -d \
   - [1. Clone Repository & Prepare Configuration](#1-clone-repository--prepare-configuration)
   - [2. Configure `docker-compose.yml`](#2-configure-docker-composeyml)
   - [3. Launch the Container](#3-launch-the-container)
+- [🔧 In-Depth: Rclone Integration & Usage Guide](#-in-depth-rclone-integration--usage-guide)
+  - [How AutoBackup Hub Uses Rclone](#how-autobackup-hub-uses-rclone)
+  - [Installing Rclone CLI on Your Host Machine](#installing-rclone-cli-on-your-host-machine)
+  - [OAuth Token Generation via `rclone authorize`](#oauth-token-generation-via-rclone-authorize)
+  - [Importing an Existing `rclone.conf`](#importing-an-existing-rcloneconf)
+  - [Transfer Flags & Performance Optimization](#transfer-flags--performance-optimization)
+  - [Encrypted Backups via `rclone crypt`](#encrypted-backups-via-rclone-crypt)
+  - [Rclone Troubleshooting & FAQ](#rclone-troubleshooting--faq)
 - [☁️ Cloud Remote Setup Guides](#️-cloud-remote-setup-guides)
-  - [⭐ In-Depth: pCloud Setup (EU & US Data Centers)](#-in-depth-pcloud-setup-eu--us-data-centers)
+  - [pCloud (EU & US Data Centers)](#pcloud-eu--us-data-centers)
   - [Google Drive](#google-drive)
   - [Microsoft OneDrive](#microsoft-onedrive)
   - [Dropbox](#dropbox)
@@ -46,14 +54,14 @@ docker run -d \
   - [Transfer Modes: Copy vs Sync vs Move](#transfer-modes-copy-vs-sync-vs-move)
 - [🛡️ Security & Privacy Recommendations](#️-security--privacy-recommendations)
 - [🔧 Environment Variables](#-environment-variables)
-- [❓ Troubleshooting & FAQ](#-troubleshooting--faq)
 - [📄 License](#-license)
 
 ---
 
 ## 🌟 Features
 
-- **Multi-Cloud Integration**: Native support for pCloud, Google Drive, Microsoft OneDrive, Dropbox, Mega, Box, TeraBox (via WebDAV), and S3/MinIO.
+- **Multi-Cloud Integration**: Native support for Google Drive, Microsoft OneDrive, Dropbox, pCloud, Mega, Box, TeraBox (via WebDAV), and S3/MinIO/Cloudflare R2.
+- **Powered by Rclone**: High-performance multi-threaded chunked uploads, checksum validation, automatic retries, and rate limiting.
 - **Flexible File Routing**: Map distinct local directory mounts (e.g. `/Documents`, `/Pictures`, `/Code`) to specific cloud destinations.
 - **Automated Scheduling**: Cron-based interval engine (every 15 mins, hourly, daily, weekly, or custom cron syntax).
 - **Multiple Transfer Modes**:
@@ -79,14 +87,14 @@ graph LR
         Compose["docker-compose.yml (Volume Mounts)"]
         Server["Node.js Backend & Web UI (:3000)"]
         SQLite[("SQLite DB (Task History & Config)")]
-        Rclone["Rclone Transfer Engine"]
+        Rclone["Rclone Engine & rclone.conf"]
     end
 
     subgraph Cloud Storage Providers
-        pCloud["pCloud (EU / US)"]
         GDrive["Google Drive"]
         OneDrive["OneDrive"]
         Dropbox["Dropbox"]
+        pCloud["pCloud (EU / US)"]
         WebDAV["TeraBox / WebDAV"]
         S3["AWS S3 / R2 / MinIO"]
     end
@@ -95,10 +103,10 @@ graph LR
     Compose --> Server
     Server --> SQLite
     Server --> Rclone
-    Rclone --> pCloud
     Rclone --> GDrive
     Rclone --> OneDrive
     Rclone --> Dropbox
+    Rclone --> pCloud
     Rclone --> WebDAV
     Rclone --> S3
 ```
@@ -110,8 +118,8 @@ graph LR
 ### 1. Clone Repository & Prepare Configuration
 
 ```bash
-git clone https://github.com/your-username/autobackup-hub.git
-cd autobackup-hub
+git clone https://github.com/attacker2007/autobackup.git
+cd autobackup
 mkdir -p config
 ```
 
@@ -159,85 +167,159 @@ Access the web dashboard in your browser:
 
 ---
 
+## 🔧 In-Depth: Rclone Integration & Usage Guide
+
+[Rclone](https://rclone.org) ("rsync for cloud storage") is the engine powering all data transfers, directory listings, quotas, and integrity checks in **AutoBackup Hub**.
+
+### How AutoBackup Hub Uses Rclone
+
+1. **Embedded CLI Execution**: The Docker container includes the official Rclone binary.
+2. **Centralized Configuration**: All configured cloud remotes are stored in standard INI format inside `/config/rclone.conf` (persisted on your host under `./config/rclone.conf`).
+3. **Live JSON Metric Streaming**: During backup tasks, the server parses Rclone's `--use-json-log` and `--stats` output, streaming real-time upload speed, remaining bytes, and file progress directly to the web dashboard via WebSockets.
+4. **Non-Blocking Operations**: Rclone executes as child processes managed by an asynchronous task queue with concurrency controls.
+
+---
+
+### Installing Rclone CLI on Your Host Machine
+
+While the container has Rclone built-in, installing Rclone on your host laptop is strongly recommended to quickly authorize browser-based OAuth2 tokens (Google Drive, OneDrive, Dropbox, pCloud, Box).
+
+| Operating System | Command |
+| :--- | :--- |
+| **Windows (WinGet)** | `winget install Rclone.Rclone` |
+| **Windows (Chocolatey)** | `choco install rclone` |
+| **macOS (Homebrew)** | `brew install rclone` |
+| **Linux (Ubuntu/Debian)** | `sudo apt update && sudo apt install rclone` |
+| **Linux (Generic Script)** | `curl https://rclone.org/install.sh \| sudo bash` |
+
+Verify installation with:
+```bash
+rclone version
+```
+
+---
+
+### OAuth Token Generation via `rclone authorize`
+
+Cloud storage providers require OAuth2 browser authentication. Because Docker containers run headlessly without a browser window, you run `rclone authorize` in your host terminal.
+
+Run the appropriate command below on your laptop:
+
+```bash
+# Google Drive
+rclone authorize "drive"
+
+# Microsoft OneDrive
+rclone authorize "onedrive"
+
+# Dropbox
+rclone authorize "dropbox"
+
+# pCloud (European Union Data Center)
+rclone authorize "pcloud" "hostname" "eapi.pcloud.com"
+
+# pCloud (United States Data Center)
+rclone authorize "pcloud" "hostname" "api.pcloud.com"
+
+# Box.com
+rclone authorize "box"
+```
+
+#### What Happens:
+1. Your default web browser will open automatically.
+2. Log in and grant permission to Rclone.
+3. Return to your terminal. You will see a JSON token:
+   ```json
+   {"access_token":"ya29.a0AfH6SM...","token_type":"Bearer","refresh_token":"1//04...","expiry":"2026-08-28T02:00:00Z"}
+   ```
+4. Paste this entire JSON string into the **Access Token / Refresh Token** box in AutoBackup Hub when adding a remote.
+
+---
+
+### Importing an Existing `rclone.conf`
+
+If you already use Rclone on your computer, you do not need to reconfigure your remotes!
+
+1. Locate your existing `rclone.conf` on your machine:
+   - **Windows**: `%APPDATA%\rclone\rclone.conf` (e.g. `C:\Users\<username>\AppData\Roaming\rclone\rclone.conf`)
+   - **Linux / macOS**: `~/.config/rclone/rclone.conf`
+2. Copy the file into your AutoBackup directory:
+   ```bash
+   cp ~/.config/rclone/rclone.conf ./config/rclone.conf
+   ```
+3. Or in the AutoBackup Hub UI, click **Manage Remotes** > **Import Raw Config** and paste the text.
+
+---
+
+### Transfer Flags & Performance Optimization
+
+AutoBackup Hub dynamically applies optimal Rclone parameters per task:
+
+| Feature | Rclone Parameter | Description |
+| :--- | :--- | :--- |
+| **Bandwidth Limit** | `--bwlimit 20M` | Prevents backup uploads from saturating your home/office internet. |
+| **Parallel Transfers** | `--transfers 4` | Number of files transferred simultaneously. |
+| **Parallel Checkers** | `--checkers 8` | Number of checksum/metadata comparison workers. |
+| **Fast List** | `--fast-list` | Reduces API queries by fetching large directory listings in batch. |
+| **Smart Conflict** | `--update --use-mtime` | Skips files that are newer on destination, only uploading changed data. |
+| **Retries** | `--retries 3 --low-level-retries 10` | Automatic exponential backoff resilience on network hiccups. |
+
+---
+
+### Encrypted Backups via `rclone crypt`
+
+For maximum privacy, you can configure an **encrypted remote** (`crypt`) layered on top of any cloud provider. Files and filenames are encrypted client-side with AES-256 before leaving your computer.
+
+1. In host terminal, run:
+   ```bash
+   rclone config
+   ```
+2. Choose **New Remote** -> Type: `crypt` -> Destination: `your_remote:encrypted_folder`.
+3. Set your encryption passwords.
+4. Copy the resulting `[crypt_remote]` block into `./config/rclone.conf`.
+5. Now, any backup task sent to `crypt_remote:` is 100% end-to-end encrypted!
+
+---
+
+### Rclone Troubleshooting & FAQ
+
+#### Q: `rclone authorize` fails with port conflict on Windows (port 53682 in use)
+**Cause**: Windows Hyper-V / WSL2 reserved port 53682.  
+**Fix**: Specify a custom port when running authorize:
+```bash
+rclone authorize "drive" --auth-no-open-browser
+```
+Or use the copy command button directly generated in the AutoBackup Hub UI.
+
+#### Q: Rate limiting errors (HTTP 429 / Google Drive 750GB/day quota)
+**Fix**: AutoBackup Hub automatically retries with exponential backoff. You can also configure a bandwidth limit (e.g. `8M`) on high-volume backup tasks to stay well within daily API limits.
+
+#### Q: Will tokens expire or require re-login?
+**No**: Rclone automatically refreshes OAuth2 tokens in the background before they expire, writing the updated token back to `./config/rclone.conf`.
+
+---
+
 ## ☁️ Cloud Remote Setup Guides
 
----
-
-### ⭐ In-Depth: pCloud Setup (EU & US Data Centers)
-
-pCloud is supported via OAuth2. Because pCloud maintains two distinct data center infrastructures (**European Union** and **United States**), proper regional configuration is necessary to prevent authentication errors.
-
-#### Step 1: Identify Your Account Region
-1. Log into your account at [pCloud.com](https://my.pcloud.com/).
-2. Look at your browser URL bar or Account Settings:
-   - If your dashboard is at `my.pcloud.com`, your account is hosted in the **United States (US)**.
-   - If your dashboard is at `eapi.pcloud.com` or redirects to the EU data center, your account is in the **European Union (EU)**.
-
-#### Step 2: Generate Rclone OAuth Token
-Open Command Prompt, PowerShell, or Terminal on your laptop where [Rclone](https://rclone.org/downloads/) is installed:
-
-- **For European Union (EU) Accounts (Most EU users)**:
-  ```bash
-  rclone authorize "pcloud" "hostname" "eapi.pcloud.com"
-  ```
-- **For United States / Global Accounts**:
-  ```bash
-  rclone authorize "pcloud" "hostname" "api.pcloud.com"
-  ```
-
-#### Step 3: Complete Web Authorization
-1. Running the command will automatically open your default browser to pCloud's authorization page.
-2. Click **Allow** / **Accept** to grant Rclone access to your pCloud storage.
-3. Return to your terminal. You will see a JSON token string:
-   ```json
-   {"access_token":"xXxXxXxXxXxXxXxXxXxXxXxXxXx","token_type":"bearer","expiry":"2026-08-28T00:00:00Z"}
-   ```
-
-#### Step 4: Add Remote in AutoBackup Hub
-1. In the AutoBackup Hub web dashboard (`http://localhost:3000`), click **Manage Remotes** > **New Remote**.
-2. Set **Remote Name** (e.g. `pcloud_backup`).
-3. Set **Provider Type** to `pCloud`.
-4. Select your **Account Region / Data Center**:
-   - 🇪🇺 `European Union (EU) Server - eapi.pcloud.com`
-   - 🇺🇸 `United States (US) Server - api.pcloud.com`
-5. Paste the JSON token generated from Step 3 into the **Access Token** field.
-6. Click **Add & Verify Remote**.
-
----
-
-#### 🛠️ pCloud Troubleshooting & Error Guide
-
-| Error Code / Symptom | Cause | Solution |
-| :--- | :--- | :--- |
-| **`Error 2094: Invalid access_token`** or **`Log in to EU server`** | Token was authorized for the US server (`api.pcloud.com`), but your pCloud account is registered in Europe (`eapi.pcloud.com`). | Run: `rclone authorize "pcloud" "hostname" "eapi.pcloud.com"`, and ensure the **EU Server** region option is selected in the dashboard. |
-| **Port 53682 conflict on Windows** | Windows Hyper-V / WSL2 reserved port 53682. | Use the terminal command shown in the AutoBackup Hub UI or run `rclone authorize` on your host OS. |
-| **Token Expired / Refresh Failed** | pCloud tokens require persistent `config/rclone.conf` mounting. | Ensure `./config:/config` is mounted in `docker-compose.yml` so refreshed tokens persist across container restarts. |
-
----
+### pCloud (EU & US Data Centers)
+- **European Union Accounts**: Run `rclone authorize "pcloud" "hostname" "eapi.pcloud.com"` and select **EU Server (`eapi.pcloud.com`)** in the dashboard.
+- **US / Global Accounts**: Run `rclone authorize "pcloud" "hostname" "api.pcloud.com"` and select **US Server (`api.pcloud.com`)**.
+> ⚠️ Note: If you receive `Error 2094: Invalid access_token`, your account was created on the EU server but queried against the US server. Re-authorize using the EU hostname command above.
 
 ### Google Drive
-1. In AutoBackup Hub, go to **Manage Remotes** > **New Remote** > Select **Google Drive**.
-2. Generate an authorization token on your machine:
-   ```bash
-   rclone authorize "drive"
-   ```
-3. Grant access in the browser window, then copy and paste the returned JSON token into the dashboard.
+1. Go to **Manage Remotes** > **New Remote** > Select **Google Drive**.
+2. Run `rclone authorize "drive"` on your host laptop.
+3. Grant access in the browser, then paste the returned JSON token into the dashboard.
 
 ### Microsoft OneDrive
 1. Go to **Manage Remotes** > **New Remote** > Select **OneDrive**.
-2. Run in terminal:
-   ```bash
-   rclone authorize "onedrive"
-   ```
-3. Authenticate with your Microsoft account, copy the JSON token, and save the remote in AutoBackup Hub.
+2. Run `rclone authorize "onedrive"`.
+3. Grant access and paste the JSON token into AutoBackup Hub.
 
 ### Dropbox
 1. Select **Dropbox** under **Manage Remotes**.
-2. Run in terminal:
-   ```bash
-   rclone authorize "dropbox"
-   ```
-3. Authorize the application and paste the token JSON.
+2. Run `rclone authorize "dropbox"`.
+3. Authorize and paste the token JSON.
 
 ### TeraBox / WebDAV
 1. Select **TeraBox / WebDAV** as the provider type.
@@ -258,9 +340,9 @@ Open Command Prompt, PowerShell, or Terminal on your laptop where [Rclone](https
 ## 📋 Creating & Configuring Backup Tasks
 
 1. Navigate to the **Dashboard** and click **New Backup Task**.
-2. **Task Name**: Give your backup job a recognizable name (e.g. `Documents to pCloud`).
+2. **Task Name**: Give your backup job a recognizable name (e.g. `Work Projects to Google Drive`).
 3. **Source Directory**: Select or enter the container path of your mounted directory (e.g. `/Documents`).
-4. **Destination Remote & Path**: Select your configured cloud remote and specify the destination folder (e.g. `pcloud_backup:MyLaptop/Documents`).
+4. **Destination Remote & Path**: Select your configured cloud remote and specify the destination folder (e.g. `gdrive:MyLaptop/Documents`).
 5. **Schedule Interval**:
    - `Every 15 Minutes`
    - `Every Hour`
@@ -309,19 +391,6 @@ Result on Local  -> [ ] (Local files deleted after successful transfer)
 | `PORT` | `3000` | Port for the Web Dashboard & API service |
 | `CONFIG_DIR` | `/config` | Directory where SQLite database and configs are stored |
 | `RCLONE_CONFIG` | `/config/rclone.conf` | Path to Rclone configuration file |
-
----
-
-## ❓ Troubleshooting & FAQ
-
-#### Q: How do I verify my cloud remote connection?
-In the web dashboard, open **Manage Remotes** and click the **Test Connection** button next to any configured remote.
-
-#### Q: Can I run a backup immediately without waiting for the schedule?
-Yes! Click the **▶ Run Now** button on any backup task card in the dashboard.
-
-#### Q: Where are transfer logs stored?
-Live logs stream in real-time on the dashboard under **Live Log Console**. Historical task run logs and execution metrics are saved in SQLite database under `./config/autobackup.db`.
 
 ---
 
