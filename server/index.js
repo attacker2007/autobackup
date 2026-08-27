@@ -17,7 +17,8 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
 app.use(compression());
-app.use(express.json());
+app.use(express.json({ limit: '250mb' }));
+app.use(express.urlencoded({ extended: true, limit: '250mb' }));
 
 // Static assets - no-cache so UI changes are always picked up immediately
 app.use(express.static(path.join(__dirname, '../public'), {
@@ -313,20 +314,46 @@ app.get('/api/sources/browse', (req, res) => {
     }
 
     if (!fs.existsSync(requestedPath)) {
-      return res.json({ path: requestedPath, items: [], exists: false });
+      return res.json({ path: requestedPath, items: [], exists: false, breadcrumbs: [], parentPath: '/hostfs' });
     }
 
-    const rawItems = fs.readdirSync(requestedPath, { withFileTypes: true });
-    const items = rawItems
-      .filter(item => item.isDirectory()) // Only show directories for folder picker
-      .map(item => ({
-        name: item.name,
-        path: path.join(requestedPath, item.name).replace(/\\/g, '/'),
-        isDir: true
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // Build clickable breadcrumbs
+    const normalized = requestedPath.replace(/\/+/g, '/').replace(/\/$/, '') || '/hostfs';
+    const parts = normalized.split('/').filter(Boolean);
+    const breadcrumbs = [];
+    let accum = '';
+    for (const part of parts) {
+      accum += '/' + part;
+      let label = part;
+      if (part === 'hostfs') label = '🏠 Host';
+      else if (/^[A-Z]$/.test(part)) label = `💾 ${part}:`;
+      breadcrumbs.push({ name: label, path: accum });
+    }
 
-    res.json({ path: requestedPath, items, exists: true });
+    // Calculate parent path
+    let parentPath = null;
+    if (normalized !== '/hostfs' && normalized !== '/backup_sources') {
+      const lastSlash = normalized.lastIndexOf('/');
+      parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '/hostfs';
+      if (parentPath === '/hostfs/' || !parentPath) parentPath = '/hostfs';
+    }
+
+    let items = [];
+    try {
+      const rawItems = fs.readdirSync(requestedPath, { withFileTypes: true });
+      items = rawItems
+        .filter(item => item.isDirectory()) // Only show directories for folder picker
+        .map(item => ({
+          name: item.name,
+          path: path.join(requestedPath, item.name).replace(/\\/g, '/'),
+          isDir: true
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    } catch (readErr) {
+      return res.json({ path: requestedPath, items: [], exists: true, error: readErr.message, breadcrumbs, parentPath });
+    }
+
+    res.json({ path: requestedPath, items, exists: true, breadcrumbs, parentPath });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1022,6 +1049,82 @@ app.post('/api/transfer/cloud-to-local', async (req, res) => {
         endTime: new Date().toISOString()
       });
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Upload local files or complete folder trees from browser directly to Cloud Remote or Backup Source
+ */
+app.post('/api/transfer/upload-files', async (req, res) => {
+  try {
+    const { remote, targetPath = '', files = [] } = req.body;
+    if (!remote || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'remote and files array are required' });
+    }
+
+    const logId = uuidv4();
+    const taskName = `Upload (${files.length} file${files.length > 1 ? 's' : ''}): Local → ${remote}`;
+
+    broadcastWS('task_started', {
+      taskId: logId,
+      taskName,
+      logId,
+      startTime: new Date().toISOString()
+    });
+
+    // Create temp staging directory for uploaded files
+    const uploadsTempDir = path.join(CONFIG_DIR, 'uploads', logId);
+    fs.mkdirSync(uploadsTempDir, { recursive: true });
+
+    let totalBytes = 0;
+    for (const f of files) {
+      if (!f.path || !f.data) continue;
+      const cleanRelPath = f.path.replace(/^(\.\.[\/\\])+/, '').replace(/^[\\\/]+/, '');
+      const fullDest = path.join(uploadsTempDir, cleanRelPath);
+      fs.mkdirSync(path.dirname(fullDest), { recursive: true });
+
+      const buffer = Buffer.from(f.data, 'base64');
+      fs.writeFileSync(fullDest, buffer);
+      totalBytes += buffer.length;
+    }
+
+    // Use rclone to copy staging folder to remote:targetPath
+    const destSpec = targetPath ? `${remote}:${targetPath}` : `${remote}:`;
+    broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] Staged ${files.length} file(s) (${(totalBytes / 1024 / 1024).toFixed(2)} MB). Transferring to ${destSpec}...\n` });
+
+    const rcloneRes = await rclone.execRclone(['copy', uploadsTempDir, destSpec, '--stats', '1s', '--use-json-log']);
+
+    // Clean up staging directory
+    try {
+      fs.rmSync(uploadsTempDir, { recursive: true, force: true });
+    } catch (e) {}
+
+    if (rcloneRes.success) {
+      broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] ✅ Upload completed successfully to ${destSpec}!\n` });
+      broadcastWS('task_finished', {
+        taskId: logId,
+        taskName,
+        logId,
+        status: 'success',
+        bytesTransferred: `${(totalBytes / 1024 / 1024).toFixed(2)} MB`,
+        filesTransferred: files.length,
+        endTime: new Date().toISOString()
+      });
+      return res.json({ success: true, filesUploaded: files.length, totalBytes });
+    } else {
+      broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] ❌ Upload failed: ${rcloneRes.output}\n` });
+      broadcastWS('task_finished', {
+        taskId: logId,
+        taskName,
+        logId,
+        status: 'failed',
+        bytesTransferred: '0 B',
+        endTime: new Date().toISOString()
+      });
+      return res.status(500).json({ error: rcloneRes.output || 'Upload failed' });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

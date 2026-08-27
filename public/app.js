@@ -1452,23 +1452,191 @@ function populateTransferRemoteDropdowns() {
   const srcDevice = document.getElementById('transfer-src-remote-device');
   const srcCloud = document.getElementById('transfer-src-remote-cloud');
   const dstCloud = document.getElementById('transfer-dst-remote-cloud');
+  const uploadDst = document.getElementById('transfer-upload-dst-remote');
 
   if (srcDevice) srcDevice.innerHTML = srcOpts;
   if (srcCloud) srcCloud.innerHTML = srcOpts;
   if (dstCloud) dstCloud.innerHTML = dstOpts;
+  if (uploadDst) uploadDst.innerHTML = dstOpts;
 }
 
 function switchTransferTab(tab) {
-  document.getElementById('transfer-panel-device').classList.toggle('hidden', tab !== 'device');
-  document.getElementById('transfer-panel-cloud').classList.toggle('hidden', tab !== 'cloud');
-  document.getElementById('tab-cloud-to-device').classList.toggle('active', tab === 'device');
-  document.getElementById('tab-cloud-to-cloud').classList.toggle('active', tab === 'cloud');
+  const panelDevice = document.getElementById('transfer-panel-device');
+  const panelUpload = document.getElementById('transfer-panel-upload');
+  const panelCloud = document.getElementById('transfer-panel-cloud');
+  const tabDevice = document.getElementById('tab-cloud-to-device');
+  const tabUpload = document.getElementById('tab-device-to-cloud');
+  const tabCloud = document.getElementById('tab-cloud-to-cloud');
+
+  if (panelDevice) panelDevice.classList.toggle('hidden', tab !== 'device');
+  if (panelUpload) panelUpload.classList.toggle('hidden', tab !== 'upload');
+  if (panelCloud) panelCloud.classList.toggle('hidden', tab !== 'cloud');
+
+  if (tabDevice) tabDevice.classList.toggle('active', tab === 'device');
+  if (tabUpload) tabUpload.classList.toggle('active', tab === 'upload');
+  if (tabCloud) tabCloud.classList.toggle('active', tab === 'cloud');
+}
+
+let uploadStagedFiles = [];
+
+function setupUploadDropzone() {
+  const dropzone = document.getElementById('upload-dropzone');
+  const fileInput = document.getElementById('upload-file-input');
+  const folderInput = document.getElementById('upload-folder-input');
+  const btnUpload = document.getElementById('btn-do-upload');
+  const dstRemoteSelect = document.getElementById('transfer-upload-dst-remote');
+
+  if (dstRemoteSelect && btnUpload) {
+    dstRemoteSelect.addEventListener('change', () => {
+      btnUpload.disabled = !(dstRemoteSelect.value && uploadStagedFiles.length > 0);
+    });
+  }
+
+  function handleFilesSelected(files) {
+    if (!files || files.length === 0) return;
+    uploadStagedFiles = Array.from(files);
+    const summary = document.getElementById('upload-selected-summary');
+    const totalBytes = uploadStagedFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+
+    if (summary) {
+      summary.style.display = 'block';
+      summary.innerHTML = `✅ Selected <strong>${uploadStagedFiles.length}</strong> item(s) (${formatFileSize(totalBytes)})`;
+    }
+
+    if (btnUpload && dstRemoteSelect) {
+      btnUpload.disabled = !(dstRemoteSelect.value && uploadStagedFiles.length > 0);
+    }
+  }
+
+  if (fileInput) fileInput.addEventListener('change', (e) => handleFilesSelected(e.target.files));
+  if (folderInput) folderInput.addEventListener('change', (e) => handleFilesSelected(e.target.files));
+
+  if (dropzone) {
+    ['dragenter', 'dragover'].forEach(name => {
+      dropzone.addEventListener(name, (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(name => {
+      dropzone.addEventListener(name, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+      });
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+      if (e.dataTransfer && e.dataTransfer.files) {
+        handleFilesSelected(e.dataTransfer.files);
+      }
+    });
+  }
+
+  if (btnUpload) {
+    btnUpload.addEventListener('click', startDeviceToCloudUpload);
+  }
+}
+
+async function startDeviceToCloudUpload() {
+  const remote = document.getElementById('transfer-upload-dst-remote')?.value;
+  const targetPath = document.getElementById('transfer-upload-dst-path')?.value.trim() || '';
+  const btnUpload = document.getElementById('btn-do-upload');
+  const progressContainer = document.getElementById('upload-progress-container');
+  const progressBar = document.getElementById('upload-progress-bar');
+  const progressStatus = document.getElementById('upload-progress-status');
+  const progressPercent = document.getElementById('upload-progress-percent');
+
+  if (!remote) {
+    alert('Please select a destination cloud remote.');
+    return;
+  }
+  if (uploadStagedFiles.length === 0) {
+    alert('Please select files or a folder to upload.');
+    return;
+  }
+
+  btnUpload.disabled = true;
+  if (progressContainer) progressContainer.classList.remove('hidden');
+
+  try {
+    const filePayloads = [];
+    let processed = 0;
+
+    if (progressStatus) progressStatus.textContent = 'Reading files from browser...';
+
+    for (const file of uploadStagedFiles) {
+      const relPath = file.webkitRelativePath || file.name;
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = reader.result;
+          const commaIdx = res.indexOf(',');
+          resolve(commaIdx !== -1 ? res.substring(commaIdx + 1) : res);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      filePayloads.push({
+        path: relPath,
+        data: base64Data,
+        size: file.size
+      });
+
+      processed++;
+      const readPct = Math.round((processed / uploadStagedFiles.length) * 40);
+      if (progressBar) progressBar.style.width = `${readPct}%`;
+      if (progressPercent) progressPercent.textContent = `${readPct}%`;
+    }
+
+    if (progressStatus) progressStatus.textContent = 'Transferring to cloud remote...';
+    if (progressBar) progressBar.style.width = '60%';
+    if (progressPercent) progressPercent.textContent = '60%';
+
+    const res = await fetch('/api/transfer/upload-files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        remote,
+        targetPath,
+        files: filePayloads
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Upload failed');
+    }
+
+    if (progressBar) progressBar.style.width = '100%';
+    if (progressPercent) progressPercent.textContent = '100%';
+    if (progressStatus) progressStatus.textContent = '✅ Upload Complete!';
+
+    alert(`✅ Successfully uploaded ${data.filesUploaded} files to ${remote}:${targetPath || '/'}`);
+    appendConsoleLine(`[System] ✅ Successfully uploaded ${data.filesUploaded} files to ${remote}:${targetPath || '/'}`, 'system');
+
+    // Reset upload form
+    uploadStagedFiles = [];
+    const summary = document.getElementById('upload-selected-summary');
+    if (summary) summary.style.display = 'none';
+  } catch (err) {
+    alert('Upload error: ' + err.message);
+    appendConsoleLine(`[System] ❌ Upload error: ${err.message}`, 'error');
+  } finally {
+    btnUpload.disabled = false;
+    setTimeout(() => {
+      if (progressContainer) progressContainer.classList.add('hidden');
+      if (progressBar) progressBar.style.width = '0%';
+    }, 2500);
+  }
 }
 
 function openTransferModal() {
   populateTransferRemoteDropdowns();
   document.getElementById('modal-transfer').classList.add('active');
   switchTransferTab('device');
+  setupUploadDropzone();
 }
 
 function openTransferForRemote(remoteName) {
@@ -1482,135 +1650,85 @@ function openTransferForRemote(remoteName) {
 
 // ─── Source Folder Browser (for Add Source modal) ───────────────────────────
 
-async function loadFolderBrowserDir(dirPath) {
-  folderBrowserState.currentPath = dirPath;
-  if (!folderBrowserState.selectedPaths) folderBrowserState.selectedPaths = new Set();
+function renderFolderBreadcrumbs(breadcrumbs, currentPath) {
+  const container = document.getElementById('folder-breadcrumbs-container');
+  if (!container) return;
 
-  const listEl = document.getElementById('folder-browser-list');
-  const pathEl = document.getElementById('folder-browser-path');
-  const upBtn = document.getElementById('btn-folder-up');
-
-  if (listEl) listEl.innerHTML = '<div class="cloud-browser-loading">Loading...</div>';
-  if (pathEl) pathEl.textContent = dirPath;
-  if (upBtn) upBtn.disabled = dirPath === '/hostfs';
-
-  try {
-    const res = await fetch(`/api/sources/browse?path=${encodeURIComponent(dirPath)}`);
-    const data = await res.json();
-
-    if (!data.exists) {
-      if (listEl) listEl.innerHTML = '<div class="cloud-browser-empty">Path not found. Ensure drive is mounted in docker-compose.yml.</div>';
-      return;
-    }
-
-    if (!data.items || data.items.length === 0) {
-      if (listEl) listEl.innerHTML = '<div class="cloud-browser-empty">No subfolders found here.</div>';
-      return;
-    }
-
-    folderBrowserState.itemsCache = data.items;
-
-    if (listEl) {
-      listEl.innerHTML = '';
-      data.items.forEach(item => {
-        const row = document.createElement('div');
-        row.className = 'cloud-browser-item is-dir';
-        const isChecked = folderBrowserState.selectedPaths.has(item.path);
-
-        row.innerHTML = `
-          <input type="checkbox" class="fb-item-checkbox" ${isChecked ? 'checked' : ''} style="cursor:pointer; margin-right:0.35rem;">
-          <span class="cb-icon">📂</span>
-          <span class="cb-name">${escapeHtml(item.name)}</span>
-        `;
-
-        const checkbox = row.querySelector('.fb-item-checkbox');
-        checkbox.addEventListener('change', (e) => {
-          e.stopPropagation();
-          if (e.target.checked) {
-            folderBrowserState.selectedPaths.add(item.path);
-          } else {
-            folderBrowserState.selectedPaths.delete(item.path);
-          }
-          updateSourceModalButtonState();
-        });
-
-        // Click icon or name: navigate inside directory
-        row.querySelector('.cb-icon, .cb-name').addEventListener('click', () => {
-          folderBrowserState.history.push(folderBrowserState.currentPath);
-          loadFolderBrowserDir(item.path);
-        });
-
-        listEl.appendChild(row);
-      });
-    }
-  } catch (err) {
-    if (listEl) listEl.innerHTML = `<div class="cloud-browser-empty">Browse error: ${escapeHtml(err.message)}</div>`;
+  if (!breadcrumbs || breadcrumbs.length === 0) {
+    container.innerHTML = `<span class="folder-browser-path">${escapeHtml(currentPath)}</span>`;
+    return;
   }
+
+  container.innerHTML = breadcrumbs.map((crumb, idx) => {
+    const isLast = idx === breadcrumbs.length - 1;
+    return `
+      <button type="button" class="breadcrumb-pill ${isLast ? 'active' : ''}" onclick="loadFolderBrowserDir('${escapeHtml(crumb.path)}')">
+        ${escapeHtml(crumb.name)}
+      </button>
+      ${isLast ? '' : '<span class="breadcrumb-separator">❯</span>'}
+    `;
+  }).join('');
 }
 
-function updateSourceModalButtonState() {
-  const count = folderBrowserState.selectedPaths ? folderBrowserState.selectedPaths.size : 0;
-  const saveBtn = document.getElementById('btn-save-source');
-  const inputEl = document.getElementById('source-host-path-input');
+function filterFolderBrowserItems(query) {
+  const q = (query || '').toLowerCase().trim();
+  const listEl = document.getElementById('folder-browser-list');
+  if (!listEl || !folderBrowserState.itemsCache) return;
 
-  if (count > 0) {
-    const pathsArr = Array.from(folderBrowserState.selectedPaths);
-    const winPaths = pathsArr.map(cp => cp.replace(/^\/hostfs\/([A-Z])\//, '$1:/').replace(/^\/hostfs\/([A-Z])$/, '$1:/'));
-    if (inputEl) inputEl.value = winPaths.join(', ');
-
-    if (saveBtn) {
-      saveBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Add ${count} Source Folder${count > 1 ? 's' : ''}`;
-    }
-  } else {
-    if (saveBtn) {
-      saveBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> Add Source Folder`;
-    }
-  }
+  const filtered = folderBrowserState.itemsCache.filter(item => item.name.toLowerCase().includes(q));
+  renderFolderBrowserList(filtered);
 }
 
-function toggleSelectAllFolderBrowser() {
-  if (!folderBrowserState || !folderBrowserState.itemsCache) return;
-  if (!folderBrowserState.selectedPaths) folderBrowserState.selectedPaths = new Set();
-
-  const currentItems = folderBrowserState.itemsCache;
-  const allChecked = currentItems.every(item => folderBrowserState.selectedPaths.has(item.path));
-
-  currentItems.forEach(item => {
-    if (allChecked) {
-      folderBrowserState.selectedPaths.delete(item.path);
-    } else {
-      folderBrowserState.selectedPaths.add(item.path);
-    }
-  });
-
+function renderFolderBrowserList(items) {
   const listEl = document.getElementById('folder-browser-list');
-  if (listEl) {
-    listEl.querySelectorAll('.fb-item-checkbox').forEach(cb => {
-      cb.checked = !allChecked;
+  if (!listEl) return;
+
+  if (!items || items.length === 0) {
+    listEl.innerHTML = '<div class="cloud-browser-empty">No subfolders match your search.</div>';
+    return;
+  }
+
+  listEl.innerHTML = '';
+  items.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'cloud-browser-item is-dir';
+    const isChecked = folderBrowserState.selectedPaths.has(item.path);
+
+    row.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0;">
+        <input type="checkbox" class="fb-item-checkbox" ${isChecked ? 'checked' : ''} style="cursor:pointer; transform: scale(1.15);">
+        <span class="cb-icon" style="cursor: pointer; font-size: 1.1rem;">📁</span>
+        <span class="cb-name" style="cursor: pointer; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(item.name)}</span>
+      </div>
+      <button type="button" class="folder-nav-btn btn-open-subfolder" title="Navigate inside this folder">
+        Open ➔
+      </button>
+    `;
+
+    const checkbox = row.querySelector('.fb-item-checkbox');
+    checkbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (e.target.checked) {
+        folderBrowserState.selectedPaths.add(item.path);
+      } else {
+        folderBrowserState.selectedPaths.delete(item.path);
+      }
+      updateSourceModalButtonState();
     });
-  }
 
-  updateSourceModalButtonState();
-}
+    // Click on name, icon, or Open button: Navigate deeper into subfolder
+    const openAction = (e) => {
+      e.stopPropagation();
+      folderBrowserState.history.push(folderBrowserState.currentPath);
+      loadFolderBrowserDir(item.path);
+    };
 
-function folderBrowserGoUp() {
-  if (folderBrowserState.history.length === 0) return;
-  const prev = folderBrowserState.history.pop();
-  loadFolderBrowserDir(prev);
-}
+    row.querySelector('.cb-icon').addEventListener('click', openAction);
+    row.querySelector('.cb-name').addEventListener('click', openAction);
+    row.querySelector('.btn-open-subfolder').addEventListener('click', openAction);
 
-// ─── Add Source Modal ────────────────────────────────────────────────────────
-
-function openAddSourceModal() {
-  document.getElementById('modal-add-source').classList.add('active');
-  document.getElementById('source-name-input').value = '';
-  document.getElementById('source-host-path-input').value = '';
-  document.getElementById('source-container-path-preview').textContent = '';
-  folderBrowserState.currentPath = '/hostfs';
-  folderBrowserState.history = [];
-  folderBrowserState.selectedPaths = new Set();
-  updateSourceModalButtonState();
-  loadFolderBrowserDir('/hostfs');
+    listEl.appendChild(row);
+  });
 }
 
 async function saveSourceFolder() {

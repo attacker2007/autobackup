@@ -1265,3 +1265,74 @@ select option:disabled {
   font-style: italic;
 }
 
+/* Breadcrumbs Styling */
+.breadcrumb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.76rem;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.breadcrumb-pill:hover {
+  background: rgba(0, 242, 254, 0.15);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.breadcrumb-pill.active {
+  background: rgba(0, 242, 254, 0.2);
+  border-color: var(--accent-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.breadcrumb-separator {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+/* Upload Dropzone Styling */
+.upload-dropzone {
+  border: 2px dashed rgba(0, 242, 254, 0.35);
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 12px;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.upload-dropzone:hover,
+.upload-dropzone.dragover {
+  border-color: var(--accent-primary);
+  background: rgba(0, 242, 254, 0.08);
+  box-shadow: 0 0 24px rgba(0, 242, 254, 0.15);
+}
+
+/* Folder item action buttons */
+.folder-nav-btn {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  color: #60a5fa;
+  font-size: 0.72rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.folder-nav-btn:hover {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: #93c5fd;
+  color: #fff;
+}
+
+
