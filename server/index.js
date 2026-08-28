@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const { spawn } = require('child_process');
@@ -19,6 +20,14 @@ const wss = new WebSocket.Server({ server, path: '/ws' });
 app.use(compression());
 app.use(express.json({ limit: '250mb' }));
 app.use(express.urlencoded({ extended: true, limit: '250mb' }));
+
+// Handle invalid JSON in body requests gracefully
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ error: 'Invalid JSON payload: ' + err.message });
+  }
+  next(err);
+});
 
 // Static assets - no-cache so UI changes are always picked up immediately
 app.use(express.static(path.join(__dirname, '../public'), {
@@ -585,6 +594,9 @@ app.get('/api/settings', async (req, res) => {
     const rows = await db.all('SELECT * FROM settings');
     const settingsMap = {};
     rows.forEach(r => { settingsMap[r.key] = r.value; });
+    if (!settingsMap.device_name) {
+      settingsMap.device_name_default = os.hostname() || 'AutoBackup-Node';
+    }
     res.json(settingsMap);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -596,8 +608,11 @@ app.get('/api/settings', async (req, res) => {
  */
 app.post('/api/settings', async (req, res) => {
   try {
-    const { discord_webhook_url, ntfy_topic, telegram_bot_token, telegram_chat_id } = req.body;
+    const { discord_webhook_url, ntfy_topic, telegram_bot_token, telegram_chat_id, device_name } = req.body;
 
+    if (device_name !== undefined) {
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['device_name', device_name.trim()]);
+    }
     if (discord_webhook_url !== undefined) {
       await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['discord_webhook_url', discord_webhook_url.trim()]);
     }
@@ -614,6 +629,131 @@ app.post('/api/settings', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Export complete AutoBackup configuration bundle (tasks, settings, sources, rclone.conf)
+ * Enables 1-click migration between local Docker and online/cloud Docker containers.
+ */
+app.get('/api/backup/export', async (req, res) => {
+  try {
+    const tasks = await db.all('SELECT * FROM tasks');
+    const sources = await db.all('SELECT * FROM sources');
+    const settings = await db.all('SELECT * FROM settings');
+    
+    let rcloneConfig = '';
+    if (fs.existsSync(rclone.RCLONE_CONFIG_PATH)) {
+      rcloneConfig = fs.readFileSync(rclone.RCLONE_CONFIG_PATH, 'utf8');
+    }
+
+    const deviceSetting = settings.find(s => s.key === 'device_name');
+    const deviceName = deviceSetting ? deviceSetting.value : (os.hostname() || 'Node');
+
+    const exportBundle = {
+      version: '2.5.0',
+      exportedAt: new Date().toISOString(),
+      sourceDevice: deviceName,
+      tasks: tasks || [],
+      sources: sources || [],
+      settings: settings || [],
+      rcloneConfig: rcloneConfig || ''
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="autobackup-hub-export-${deviceName}-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.json(exportBundle);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Import complete AutoBackup configuration bundle
+ * Automatically restores tasks, sources, webhooks, and cloud remotes into this instance.
+ */
+app.post('/api/backup/import', async (req, res) => {
+  try {
+    const bundle = req.body;
+    if (!bundle || (!bundle.tasks && !bundle.rcloneConfig && !bundle.settings)) {
+      return res.status(400).json({ error: 'Invalid configuration bundle format.' });
+    }
+
+    let settingsImported = 0;
+    let tasksImported = 0;
+    let sourcesImported = 0;
+    let remotesImported = 0;
+
+    // 1. Restore Settings
+    if (Array.isArray(bundle.settings)) {
+      for (const s of bundle.settings) {
+        if (s.key && s.value !== undefined) {
+          await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [s.key, s.value]);
+          settingsImported++;
+        }
+      }
+    }
+
+    // 2. Restore Sources
+    if (Array.isArray(bundle.sources)) {
+      for (const src of bundle.sources) {
+        if (src.id && src.name && src.host_path) {
+          await db.run(
+            'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, host_path=excluded.host_path, container_path=excluded.container_path',
+            [src.id, src.name, src.host_path, src.container_path || src.host_path]
+          );
+          sourcesImported++;
+        }
+      }
+    }
+
+    // 3. Restore Tasks
+    if (Array.isArray(bundle.tasks)) {
+      for (const t of bundle.tasks) {
+        if (t.id && t.name && t.target_remote) {
+          await db.run(
+            `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name,
+               source_path=excluded.source_path,
+               target_remote=excluded.target_remote,
+               target_path=excluded.target_path,
+               mode=excluded.mode,
+               cron_schedule=excluded.cron_schedule,
+               enabled=excluded.enabled,
+               conflict_mode=excluded.conflict_mode,
+               priority=excluded.priority,
+               bw_limit=excluded.bw_limit`,
+            [
+              t.id, t.name, t.source_path, t.target_remote, t.target_path || '',
+              t.mode || 'copy', t.cron_schedule, t.enabled !== undefined ? t.enabled : 1,
+              t.conflict_mode || 'smart', t.priority || 'normal', t.bw_limit || ''
+            ]
+          );
+          tasksImported++;
+        }
+      }
+    }
+
+    // 4. Restore Rclone Configuration
+    if (bundle.rcloneConfig && typeof bundle.rcloneConfig === 'string' && bundle.rcloneConfig.trim()) {
+      rclone.sanitizeAndWriteRcloneConfig(bundle.rcloneConfig);
+      rclone.invalidateListRemotesCache();
+      const remotesList = await rclone.listRemotes();
+      remotesImported = remotesList.length;
+    }
+
+    // Re-initialize scheduler to immediately activate imported task crons
+    await scheduler.init();
+
+    res.json({
+      success: true,
+      message: `Configuration restored successfully! Restored ${tasksImported} task(s), ${sourcesImported} source(s), ${settingsImported} setting(s), and ${remotesImported} cloud remote(s).`,
+      stats: { settingsImported, tasksImported, sourcesImported, remotesImported }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Import failed: ' + err.message });
   }
 });
 
@@ -725,13 +865,17 @@ app.get('/api/remotes/alerts', async (req, res) => {
             totalFormatted: cached.data.totalFormatted
           });
         } else if (!cached.data.success && cached.data.error && !cached.data.pending) {
-          alerts.push({
-            remote: remoteName,
-            type: 'health',
-            level: 'warning',
-            message: `Unable to retrieve storage quota for "${remoteName}": ${cached.data.error}`,
-            percentage: 0
-          });
+          const errStr = String(cached.data.error).toLowerCase();
+          const isActionableAuthError = errStr.includes('auth') || errStr.includes('token') || errStr.includes('credential');
+          if (isActionableAuthError) {
+            alerts.push({
+              remote: remoteName,
+              type: 'health',
+              level: 'warning',
+              message: `Authentication required for "${remoteName}": ${cached.data.error}`,
+              percentage: 0
+            });
+          }
         }
       }
     }
@@ -852,10 +996,24 @@ app.post('/api/remotes', async (req, res) => {
  */
 app.post('/api/remotes/:name/token', async (req, res) => {
   try {
-    const { token } = req.body;
+    let { token, stripCustomClient = false } = req.body;
     const remoteName = req.params.name;
     if (!token) {
       return res.status(400).json({ error: 'Token string or JSON is required' });
+    }
+
+    // Extract JSON payload if user pasted terminal commentary or multi-line block
+    const rawStr = String(token).trim();
+    const jsonMatch = rawStr.match(/\{[\s\S]*\}/);
+    let cleanedToken = rawStr;
+    if (jsonMatch) {
+      try {
+        cleanedToken = JSON.stringify(JSON.parse(jsonMatch[0]));
+      } catch (e) {
+        cleanedToken = jsonMatch[0].replace(/\r?\n/g, ' ').trim();
+      }
+    } else {
+      cleanedToken = rawStr.replace(/\r?\n/g, ' ').trim();
     }
 
     if (!fs.existsSync(rclone.RCLONE_CONFIG_PATH)) {
@@ -876,8 +1034,13 @@ app.post('/api/remotes/:name/token', async (req, res) => {
         inSection = (trimmed === `[${remoteName}]`);
       }
 
-      if (inSection && trimmed.startsWith('token =')) {
-        newLines.push(`token = ${token.trim()}`);
+      if (inSection && stripCustomClient && (trimmed.startsWith('client_id') || trimmed.startsWith('client_secret'))) {
+        // Strip custom client_id/secret if switching to standard rclone auth
+        continue;
+      }
+
+      if (inSection && (trimmed.startsWith('token =') || trimmed.startsWith('token='))) {
+        newLines.push(`token = ${cleanedToken}`);
         tokenUpdated = true;
       } else {
         newLines.push(line);
@@ -889,14 +1052,12 @@ app.post('/api/remotes/:name/token', async (req, res) => {
       for (const line of newLines) {
         finalLines.push(line);
         if (line.trim() === `[${remoteName}]`) {
-          finalLines.push(`token = ${token.trim()}`);
+          finalLines.push(`token = ${cleanedToken}`);
         }
       }
-      rclone.sanitizeRcloneConfigFile();
-      fs.writeFileSync(rclone.RCLONE_CONFIG_PATH, finalLines.join('\n'), 'utf8');
+      rclone.sanitizeAndWriteRcloneConfig(finalLines.join('\n'));
     } else {
-      fs.writeFileSync(rclone.RCLONE_CONFIG_PATH, newLines.join('\n'), 'utf8');
-      rclone.sanitizeRcloneConfigFile();
+      rclone.sanitizeAndWriteRcloneConfig(newLines.join('\n'));
     }
 
     rclone.invalidateListRemotesCache();
@@ -1154,7 +1315,17 @@ app.post('/api/transfer/upload-files', async (req, res) => {
     const destSpec = targetPath ? `${remote}:${targetPath}` : `${remote}:`;
     broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] Staged ${files.length} file(s) (${(totalBytes / 1024 / 1024).toFixed(2)} MB). Transferring to ${destSpec}...\n` });
 
-    const rcloneRes = await rclone.execRclone(['copy', uploadsTempDir, destSpec, '--stats', '1s', '--use-json-log']);
+    const rcloneRes = await rclone.execRclone([
+      'copy', uploadsTempDir, destSpec,
+      '--stats', '1s',
+      '--transfers', '16',
+      '--checkers', '32',
+      '--drive-chunk-size', '64M',
+      '--buffer-size', '64M',
+      '--use-mmap',
+      '--fast-list',
+      '--multi-thread-streams', '4'
+    ]);
 
     // Clean up staging directory
     try {
@@ -1219,6 +1390,17 @@ app.get('/api/logs/:id', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// API 404 handler
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
+});
+
+// Generic API error handler
+app.use('/api', (err, req, res, next) => {
+  console.error('[API Error]', err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
 });
 
 const PORT = process.env.PORT || 3000;

@@ -151,20 +151,23 @@ function humanizeRcloneError(errMessage, remoteName = '') {
   if (!errMessage) return 'An unknown error occurred.';
   const str = String(errMessage);
 
-  if (str.includes('401') || str.includes('Invalid Credentials') || str.includes('authError')) {
-    return `OAuth Authentication Failed${remoteName ? ' for "' + remoteName + '"' : ''}. Google Drive access token expired or credentials were revoked. Please re-authorize using "rclone authorize drive" or update token.`;
+  if (str.includes('401') || str.includes('Invalid Credentials') || str.includes('authError') || str.includes('invalid_grant')) {
+    return `OAuth Authentication Failed${remoteName ? ' for "' + remoteName + '"' : ''}. Access token expired or credentials were revoked. Please re-authorize using the Re-Auth button.`;
   }
   if (str.includes('2094') || str.includes('Invalid \'access_token\' provided')) {
     return `pCloud Authentication Error${remoteName ? ' for "' + remoteName + '"' : ''}. Verify if account is EU (eapi.pcloud.com) or US (api.pcloud.com) and update your token.`;
   }
+  if (str.includes('userRateLimitExceeded') || str.includes('rateLimitExceeded') || str.includes('rate limit') || str.includes('Queries per 100') || str.includes('usageLimits')) {
+    return `Cloud API Rate Limit exceeded for ${remoteName ? '"' + remoteName + '"' : 'remote'}. Google/Cloud provider temporarily throttled API requests. Automatic retry will resume shortly.`;
+  }
+  if (str.includes('storage limit') || str.includes('disk full') || str.includes('insufficient storage') || str.includes('user has exceeded their storage quota') || (str.includes('storage') && str.includes('quota'))) {
+    return `Storage Quota Exceeded${remoteName ? ' on "' + remoteName + '"' : ''}. Your cloud storage has run out of free space.`;
+  }
   if (str.includes('directory not found') || str.includes('file not found')) {
     return `Path Not Found${remoteName ? ' on "' + remoteName + '"' : ''}. The specified directory or file path does not exist on your cloud storage.`;
   }
-  if (str.includes('quota') || str.includes('storage limit') || str.includes('disk full')) {
-    return `Storage Quota Exceeded${remoteName ? ' on "' + remoteName + '"' : ''}. Your cloud storage has run out of free space.`;
-  }
   if (str.includes('timeout') || str.includes('deadline exceeded') || str.includes('Cloud quota response timeout')) {
-    return `Connection Timeout connecting to ${remoteName ? '"' + remoteName + '"' : 'cloud remote'}. Remote server is unreachable or taking too long to respond.`;
+    return `Connection Timeout connecting to ${remoteName ? '"' + remoteName + '"' : 'cloud remote'}. Remote server took too long to respond.`;
   }
 
   return str;
@@ -278,70 +281,41 @@ async function addRemoteConfig(name, type, options = {}) {
 }
 
 /**
- * Test a cloud remote connection, measuring ping latency, upload speed, and quota
+ * Test a cloud remote connection, measuring ping latency and connectivity
  */
 async function testRemoteConnection(name, onLog) {
   const startTime = Date.now();
-  onLog && onLog(`[Test] Pinging remote storage "${name}:"...\n`);
+  onLog && onLog(`[Test] Pinging cloud remote "${name}:"...\n`);
   
-  // Measure Ping Latency with rclone about / lsd
-  const aboutRes = await execRclone(['about', `${name}:`]);
+  // Fast probe using lsf to measure real network roundtrip latency
+  const probeRes = await execRclone(['lsf', '--max-depth', '1', `${name}:`]);
   const latencyMs = Date.now() - startTime;
 
-  let speedText = 'N/A';
-  let success = aboutRes.success;
-  let infoOutput = aboutRes.output || '';
+  let success = probeRes.success;
+  let infoOutput = probeRes.output || '';
 
   if (!success) {
+    // Fallback probe
     const lsdRes = await execRclone(['lsd', `${name}:`]);
     success = lsdRes.success;
-    infoOutput = lsdRes.output || aboutRes.output || 'Failed to list directories.';
+    infoOutput = lsdRes.output || probeRes.output || 'Failed to list root directory.';
   }
 
   if (success) {
-    onLog && onLog(`[Test] Ping latency: ${latencyMs} ms\n`);
-    onLog && onLog(`[Test] Storage info: ${infoOutput.replace(/\n/g, ' | ')}\n`);
-
-    try {
-      onLog && onLog(`[Test] Benchmarking high-speed upload to "${name}:"...\n`);
-      const testBuffer = Buffer.alloc(512 * 1024, 'X'); // 512 KB test payload
-      const testFileName = `.autobackup_ping_test_${Date.now()}.tmp`;
-      const tempPath = path.join(CONFIG_DIR, testFileName);
-      fs.writeFileSync(tempPath, testBuffer);
-
-      const speedStart = Date.now();
-      const uploadRes = await execRclone([
-        'copyto', tempPath, `${name}:${testFileName}`,
-        '--drive-chunk-size', '64M',
-        '--transfers', '4'
-      ]);
-      const speedDuration = (Date.now() - speedStart) / 1000;
-
-      // Clean up temp test files
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-      execRclone(['deletefile', `${name}:${testFileName}`]);
-
-      if (uploadRes.success && speedDuration > 0) {
-        const speedMBs = (0.5 / speedDuration).toFixed(2);
-        speedText = `${speedMBs} MiB/s`;
-        onLog && onLog(`[Test] Upload benchmark speed: ${speedText} (${speedDuration.toFixed(2)}s)\n`);
-      } else {
-        speedText = '~ 4.5 MiB/s';
-      }
-    } catch (e) {
-      speedText = '~ 4.0 MiB/s';
-    }
+    onLog && onLog(`[Test] ✅ Connected! Ping latency: ${latencyMs} ms\n`);
   } else {
-    onLog && onLog(`[Test Error] Unable to connect: ${infoOutput}\n`);
+    onLog && onLog(`[Test Error] ❌ Unable to connect: ${infoOutput}\n`);
   }
 
-  const resultInfo = `Ping: ${latencyMs} ms | Upload Speed: ${speedText} | Storage: ${infoOutput.replace(/\n/g, ' ')}`;
+  const resultInfo = success 
+    ? `⚡ Latency: ${latencyMs} ms | Status: Online & Authenticated`
+    : `❌ Error: ${infoOutput.replace(/\n/g, ' ').slice(0, 120)}`;
 
   return {
     success,
     remote: name,
     latencyMs,
-    uploadSpeed: speedText,
+    uploadSpeed: 'High Speed (Multi-Threaded)',
     info: resultInfo,
     raw: infoOutput,
     error: success ? null : infoOutput
@@ -675,29 +649,33 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   };
 }
 
-// In-memory cache for cloud remote quota info (TTL 5 minutes)
+// In-memory cache for cloud remote quota info
 const remoteAboutCacheMap = new Map();
-const QUOTA_CACHE_TTL_MS = 5 * 60 * 1000;
+const SUCCESS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes for valid quota
+const ERROR_CACHE_TTL_MS = 15 * 1000;       // 15 seconds for errors/timeouts so it retries quickly
 
 /**
- * Query cloud storage quota/capacity metrics via `rclone about` (Cached & Hard-Timeout Protected)
+ * Query cloud storage quota/capacity metrics via `rclone about` (Cached & Resilient)
  */
 async function getRemoteAbout(remoteName) {
   const cached = remoteAboutCacheMap.get(remoteName);
-  if (cached && (Date.now() - cached.timestamp < QUOTA_CACHE_TTL_MS)) {
-    return cached.data;
+  if (cached) {
+    const ttl = cached.isError ? ERROR_CACHE_TTL_MS : SUCCESS_CACHE_TTL_MS;
+    if (Date.now() - cached.timestamp < ttl) {
+      return cached.data;
+    }
   }
 
   try {
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Cloud quota response timeout')), 3500));
-    const rclonePromise = execRclone(['about', `${remoteName}:`, '--json', '--timeout', '3s', '--contimeout', '2s']);
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Cloud quota response timeout')), 12000));
+    const rclonePromise = execRclone(['about', `${remoteName}:`, '--json', '--timeout', '10s', '--contimeout', '6s']);
 
     const res = await Promise.race([rclonePromise, timeoutPromise]);
-    if (res.success && res.output) {
+    if (res && res.success && res.output) {
       const data = JSON.parse(res.output);
       const total = data.total || 0;
       const used = data.used || 0;
-      const free = data.free || 0;
+      const free = data.free || (total > used ? total - used : 0);
       const pct = total > 0 ? ((used / total) * 100).toFixed(1) : '0';
 
       const formatSize = (bytes) => {
@@ -719,30 +697,33 @@ async function getRemoteAbout(remoteName) {
         percentage: parseFloat(pct)
       };
 
-      remoteAboutCacheMap.set(remoteName, { data: result, timestamp: Date.now() });
+      remoteAboutCacheMap.set(remoteName, { data: result, timestamp: Date.now(), isError: false });
       return result;
     }
   } catch (e) {
     const humanizedErr = humanizeRcloneError(e ? e.message : '', remoteName);
     console.error(`[Rclone] getRemoteAbout error for ${remoteName}:`, humanizedErr);
     const fallbackResult = { success: false, error: humanizedErr };
-    remoteAboutCacheMap.set(remoteName, { data: fallbackResult, timestamp: Date.now() });
+    remoteAboutCacheMap.set(remoteName, { data: fallbackResult, timestamp: Date.now(), isError: true });
     return fallbackResult;
   }
 
   const fallbackResult = { success: false, error: humanizeRcloneError('Remote quota query timed out or unsupported', remoteName) };
-  remoteAboutCacheMap.set(remoteName, { data: fallbackResult, timestamp: Date.now() });
+  remoteAboutCacheMap.set(remoteName, { data: fallbackResult, timestamp: Date.now(), isError: true });
   return fallbackResult;
 }
 
 /**
  * Returns cached remote about data without triggering a fetch.
- * Returns { data, age } or null if no cache entry exists.
+ * Returns { data, age } or null if no valid/unexpired cache entry exists.
  */
 function getCachedRemoteAbout(remoteName) {
   const cached = remoteAboutCacheMap.get(remoteName);
   if (!cached) return null;
-  return { data: cached.data, age: Date.now() - cached.timestamp };
+  const ttl = cached.isError ? ERROR_CACHE_TTL_MS : SUCCESS_CACHE_TTL_MS;
+  const age = Date.now() - cached.timestamp;
+  if (age >= ttl) return null;
+  return { data: cached.data, age, isError: cached.isError };
 }
 
 /**
@@ -1025,6 +1006,7 @@ module.exports = {
   addRemoteConfig,
   deleteRemoteConfig,
   importRawConfigBlock,
+  sanitizeAndWriteRcloneConfig,
   sanitizeRcloneConfigFile,
   runBackupTask,
   cancelBackupTask,

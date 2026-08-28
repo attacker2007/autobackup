@@ -1,7 +1,19 @@
 const cron = require('node-cron');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const db = require('./db');
 const { runBackupTask } = require('./rclone');
+
+/**
+ * Get configured device node name or default to hostname
+ */
+async function getDeviceName() {
+  try {
+    const row = await db.get('SELECT value FROM settings WHERE key = ?', ['device_name']);
+    if (row && row.value && row.value.trim()) return row.value.trim();
+  } catch (e) {}
+  return os.hostname() || 'AutoBackup-Node';
+}
 
 /**
  * Check if a given date is the last Friday of its month
@@ -151,6 +163,12 @@ class TaskScheduler {
   async init() {
     console.log('[Scheduler] Initializing backup task scheduler...');
     try {
+      // Clear existing scheduled jobs if reinitializing
+      for (const [id, cronTask] of this.cronJobs.entries()) {
+        try { cronTask.stop(); } catch (e) {}
+      }
+      this.cronJobs.clear();
+
       const tasks = await db.all('SELECT * FROM tasks WHERE enabled = 1');
       console.log(`[Scheduler] Loaded ${tasks.length} active task(s) from database.`);
       for (const task of tasks) {
@@ -429,6 +447,7 @@ class TaskScheduler {
         return;
       }
 
+      const deviceName = await getDeviceName();
       const webhookUrl = setting.value.trim();
       const isSuccess = result.success;
       const statusIcon = isSuccess ? '🟢' : '🔴';
@@ -438,15 +457,16 @@ class TaskScheduler {
       const remoteTarget = `${task.target_remote}:${task.target_path || ''}`;
 
       const payload = {
-        username: 'AutoBackup Hub',
+        username: `AutoBackup Hub (${deviceName})`,
         avatar_url: 'https://cdn-icons-png.flaticon.com/512/4149/4149678.png',
-        content: `${statusIcon} **[${isSuccess ? 'SUCCESS' : 'FAILED'}]** ${task.name}${dryRunTag} ➔ \`${remoteTarget}\`${bytesText}`,
+        content: `${statusIcon} **[${isSuccess ? 'SUCCESS' : 'FAILED'}]** \`[${deviceName}]\` ${task.name}${dryRunTag} ➔ \`${remoteTarget}\`${bytesText}`,
         embeds: [
           {
             title: `${statusTitle}: ${task.name}${dryRunTag}`,
-            description: `Backup job execution summary for container volume target **${remoteTarget}**.`,
+            description: `Backup job execution summary on device **${deviceName}** for target **${remoteTarget}**.`,
             color: isSuccess ? 0x22c55e : 0xef4444,
             fields: [
+              { name: 'Device Node', value: `\`${deviceName}\``, inline: true },
               { name: 'Status', value: isSuccess ? '`SUCCESS`' : '`FAILED`', inline: true },
               { name: 'Transferred', value: `\`${result.bytesTransferred || '0 B'}\``, inline: true },
               { name: 'Priority', value: `\`${(task.priority || 'normal').toUpperCase()}\``, inline: true },
@@ -454,7 +474,7 @@ class TaskScheduler {
               { name: 'Mode', value: `\`${(task.mode || 'copy').toUpperCase()}\``, inline: true },
               { name: 'Bandwidth Limit', value: `\`${task.bw_limit || 'Unlimited'}\``, inline: true }
             ],
-            footer: { text: `Log ID: ${logId.slice(0, 8)} • AutoBackup Hub Engine` },
+            footer: { text: `Node: ${deviceName} • Log ID: ${logId.slice(0, 8)} • AutoBackup Engine` },
             timestamp: new Date().toISOString()
           }
         ]
@@ -484,10 +504,11 @@ class TaskScheduler {
       const setting = await db.get('SELECT value FROM settings WHERE key = ?', ['ntfy_topic']);
       if (!setting || !setting.value || !setting.value.trim()) return;
 
+      const deviceName = await getDeviceName();
       const topic = setting.value.trim().replace(/^https?:\/\/ntfy\.sh\//, '');
       const isSuccess = result.success;
-      const title = `${isSuccess ? '✅ Backup Succeeded' : '❌ Backup Failed'}: ${task.name}${isDryRun ? ' (Dry Run)' : ''}`;
-      const message = `Target: ${task.target_remote}:${task.target_path || ''}\nTransferred: ${result.bytesTransferred || '0 B'}\nMode: ${(task.mode || 'copy').toUpperCase()} | Priority: ${(task.priority || 'normal').toUpperCase()}`;
+      const title = `[${deviceName}] ${isSuccess ? '✅ Backup Succeeded' : '❌ Backup Failed'}: ${task.name}${isDryRun ? ' (Dry Run)' : ''}`;
+      const message = `Device: ${deviceName}\nTarget: ${task.target_remote}:${task.target_path || ''}\nTransferred: ${result.bytesTransferred || '0 B'}\nMode: ${(task.mode || 'copy').toUpperCase()} | Priority: ${(task.priority || 'normal').toUpperCase()}`;
 
       const https = require('https');
       const req = https.request(`https://ntfy.sh/${encodeURIComponent(topic)}`, {
@@ -566,12 +587,14 @@ class TaskScheduler {
       const chatIdRow = await db.get('SELECT value FROM settings WHERE key = ?', ['telegram_chat_id']);
       if (!botTokenRow || !botTokenRow.value || !chatIdRow || !chatIdRow.value) return;
 
+      const deviceName = await getDeviceName();
       const token = botTokenRow.value.trim();
       const chatId = chatIdRow.value.trim();
       const isSuccess = result.success;
 
-      const text = `*AutoBackup Hub Alert*\n\n` +
+      const text = `*AutoBackup Hub Alert [${deviceName}]*\n\n` +
         `*Task:* ${task.name}${isDryRun ? ' (Dry Run)' : ''}\n` +
+        `*Device:* \`${deviceName}\`\n` +
         `*Status:* ${isSuccess ? '✅ SUCCESS' : '❌ FAILED'}\n` +
         `*Transferred:* \`${result.bytesTransferred || '0 B'}\` \n` +
         `*Target:* \`${task.target_remote}:${task.target_path || ''}\` \n` +

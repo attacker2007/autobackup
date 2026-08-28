@@ -216,7 +216,7 @@ function renderTasks() {
 
   filteredTasks.forEach(task => {
     const card = document.createElement('div');
-    card.className = 'task-item';
+    card.className = 'task-card';
     card.dataset.taskId = task.id;
 
     const statusClass = `status-${task.last_status || 'idle'}`;
@@ -226,7 +226,7 @@ function renderTasks() {
     if (task.cron_schedule === 'last_friday') scheduleDisplay = '🏆 Backup Day (Last Friday)';
     else if (task.cron_schedule === 'monthly' || task.cron_schedule === '0 3 1 * *') scheduleDisplay = '📅 Monthly (1st of Month)';
     else if (task.cron_schedule === 'weekly' || task.cron_schedule === '0 3 * * 0') scheduleDisplay = '📅 Weekly (Every Sunday)';
-    else if (task.cron_schedule === 'daily' || task.cron_schedule === '0 2 * * *') scheduleDisplay = '📅 Daily (Daily / Laptop Wakeup)';
+    else if (task.cron_schedule === 'daily' || task.cron_schedule === '0 2 * * *') scheduleDisplay = '📅 Daily (Daily / Laptop Catchup)';
 
     let priority = task.priority;
     if (!priority || priority === 'normal') {
@@ -239,15 +239,15 @@ function renderTasks() {
 
     let priorityBadgeHtml = '';
     if (priority === 'critical') {
-      priorityBadgeHtml = `<span class="badge" style="background:rgba(244,63,94,0.25); color:#fb7185; border:1px solid rgba(244,63,94,0.4); font-size:0.68rem; font-weight:700;">🏆 CRITICAL (Backup Day)</span>`;
+      priorityBadgeHtml = `<span class="badge" style="background:rgba(244,63,94,0.15); color:#fb7185; border:1px solid rgba(244,63,94,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;">🏆 CRITICAL</span>`;
     } else if (priority === 'high') {
-      priorityBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.25); color:#fbbf24; border:1px solid rgba(245,158,11,0.4); font-size:0.68rem; font-weight:700;">📅 HIGH (Monthly)</span>`;
+      priorityBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.15); color:#fbbf24; border:1px solid rgba(245,158,11,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;">📅 HIGH</span>`;
     } else if (priority === 'medium') {
-      priorityBadgeHtml = `<span class="badge" style="background:rgba(139,92,246,0.25); color:#a78bfa; border:1px solid rgba(139,92,246,0.4); font-size:0.68rem; font-weight:700;">📅 MEDIUM (Weekly)</span>`;
+      priorityBadgeHtml = `<span class="badge" style="background:rgba(139,92,246,0.15); color:#c4b5fd; border:1px solid rgba(139,92,246,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;">📅 MEDIUM</span>`;
     } else if (priority === 'low') {
-      priorityBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.25); color:#60a5fa; border:1px solid rgba(59,130,246,0.4); font-size:0.68rem; font-weight:700;">📅 LOW (Daily / Wakeup)</span>`;
+      priorityBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.15); color:#93c5fd; border:1px solid rgba(59,130,246,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;">📅 LOW</span>`;
     } else {
-      priorityBadgeHtml = `<span class="badge" style="font-size:0.68rem;">Priority: ${priority.toUpperCase()}</span>`;
+      priorityBadgeHtml = `<span class="badge" style="font-size:0.68rem; padding:0.1rem 0.45rem; border-radius:4px;">${priority.toUpperCase()}</span>`;
     }
 
     const conflictLabel = (task.conflict_mode || 'smart').toUpperCase();
@@ -255,11 +255,11 @@ function renderTasks() {
 
     let sourcePathDisplay = '';
     if (sourcePaths.length > 1) {
-      sourcePathDisplay = `<span class="path-code" title="${escapeHtml(sourcePaths.join(', '))}">📁 ${sourcePaths.length} Containers (root/)</span>`;
+      sourcePathDisplay = `<span class="path-chip" title="${escapeHtml(sourcePaths.join(', '))}">📁 ${sourcePaths.length} Source Folders</span>`;
     } else if (sourcePaths.length === 1) {
-      sourcePathDisplay = `<span class="path-code">${escapeHtml(sourcePaths[0])}</span>`;
+      sourcePathDisplay = `<span class="path-chip" title="${escapeHtml(sourcePaths[0])}">${escapeHtml(sourcePaths[0])}</span>`;
     } else {
-      sourcePathDisplay = `<span class="path-code">${escapeHtml(task.source_path)}</span>`;
+      sourcePathDisplay = `<span class="path-chip">${escapeHtml(task.source_path)}</span>`;
     }
 
     const nextRunDisplay = formatNextRun(task.next_run, task.cron_schedule);
@@ -269,29 +269,23 @@ function renderTasks() {
     if (isRunning) {
       actionButtonsHtml = `
         <button class="btn btn-sm btn-outline btn-stop-task" data-id="${task.id}" style="color:#fb7185; border-color:rgba(244,63,94,0.4);" title="Stop Running Backup Task">
-          ⏹ Stop Task
-        </button>
-        <button class="btn-icon" disabled style="opacity:0.3; cursor:not-allowed;" title="Cannot edit while task is running">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-        </button>
-        <button class="btn-icon" disabled style="opacity:0.3; cursor:not-allowed;" title="Cannot delete while task is running">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          ⏹ Stop
         </button>
       `;
     } else {
       actionButtonsHtml = `
-        <button class="btn btn-sm btn-primary btn-run-now" data-id="${task.id}" title="Run Backup Now">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-          Run Now
+        <button class="btn btn-sm btn-primary btn-run-now" data-id="${task.id}" title="Run Backup Task Now">
+          <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          Run
         </button>
-        <button class="btn btn-sm btn-outline btn-dry-run" data-id="${task.id}" style="color:#00f2fe; border-color:rgba(0,242,254,0.4);" title="Simulate backup run without modifying cloud storage">
+        <button class="btn btn-sm btn-outline btn-dry-run" data-id="${task.id}" title="Dry Run Simulation">
           🧪 Dry Run
         </button>
-        <button class="btn-icon btn-edit-task" data-id="${task.id}" title="Edit Task">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+        <button class="btn btn-sm btn-secondary btn-edit-task" data-id="${task.id}" title="Edit Task">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
         </button>
-        <button class="btn-icon btn-delete-task" data-id="${task.id}" title="Delete Task">
-          <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        <button class="btn btn-sm btn-danger-outline btn-delete-task" data-id="${task.id}" title="Delete Task">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
       `;
     }
@@ -306,31 +300,32 @@ function renderTasks() {
          </div>`;
 
     card.innerHTML = `
-      <div class="task-main">
-        <div class="task-title-row">
-          <span class="task-name">${escapeHtml(task.name)}</span>
-          <span class="mode-badge mode-${task.mode}">${task.mode}</span>
-          ${sourcePaths.length > 1 ? `<span class="mode-badge mode-copy" style="background:rgba(0,242,254,0.15); color:#00f2fe;">Multi-Container</span>` : ''}
-          ${priorityBadgeHtml}
-          ${task.bw_limit ? `<span class="badge" style="font-size:0.68rem; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);">⚡ Limit: ${task.bw_limit}</span>` : ''}
-          <span class="badge" style="font-size:0.68rem;">Conflict: ${conflictLabel}</span>
-          <span class="status-pill ${statusClass}" id="status-pill-${task.id}">${statusLabel}</span>
+      <div class="task-card-header">
+        <div>
+          <div class="task-title">
+            <span>${escapeHtml(task.name)}</span>
+            <span class="remote-type-badge">${task.mode.toUpperCase()}</span>
+            ${priorityBadgeHtml}
+            ${task.bw_limit ? `<span class="badge" style="font-size:0.68rem; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); padding:0.1rem 0.4rem; border-radius:4px;">⚡ ${task.bw_limit}</span>` : ''}
+          </div>
+          <div class="task-path-row" style="margin-top: 0.35rem;">
+            ${sourcePathDisplay}
+            <span style="color: var(--text-dim);">➔</span>
+            <span class="target-remote-chip">☁️ ${escapeHtml(task.target_remote)}:${escapeHtml(task.target_path || '/')}</span>
+          </div>
         </div>
-        <div class="task-paths">
-          ${sourcePathDisplay}
-          <span>➔</span>
-          <span class="path-code">${escapeHtml(task.target_remote)}:${escapeHtml(task.target_path || '')}</span>
-        </div>
-        ${progressBarHtml}
-        <div class="task-meta">
-          <span>Schedule: ${escapeHtml(scheduleDisplay)}</span>
-          <span>🕒 Last Run: ${task.last_run ? new Date(task.last_run).toLocaleString() : 'Never'}</span>
-          <span>⏳ Next Run: <strong>${escapeHtml(nextRunDisplay)}</strong></span>
+        <div class="task-actions-group">
+          ${actionButtonsHtml}
         </div>
       </div>
 
-      <div class="task-actions">
-        ${actionButtonsHtml}
+      ${progressBarHtml}
+
+      <div class="task-meta-bar">
+        <span>🕒 Schedule: <strong>${escapeHtml(scheduleDisplay)}</strong></span>
+        <span>🕒 Last Run: ${task.last_run ? new Date(task.last_run).toLocaleString() : 'Never'}</span>
+        <span>⏳ Next Run: <strong>${escapeHtml(nextRunDisplay)}</strong></span>
+        <span class="${statusClass}" id="status-pill-${task.id}" style="font-weight:700; font-size:0.72rem;">${statusLabel}</span>
       </div>
     `;
 
@@ -355,6 +350,7 @@ async function fetchSources() {
 
 function populateSourcesDropdown() {
   const select = document.getElementById('task-source-select');
+  if (!select) return;
   if (detectedSources.length === 0) {
     select.innerHTML = '<option value="">No mounted volumes detected in docker-compose.yml</option>';
     return;
@@ -502,14 +498,22 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
 
       checkboxEl.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
+        if (node.containerPath) {
+          if (isChecked) taskSelectedFoldersSet.add(node.containerPath);
+          else taskSelectedFoldersSet.delete(node.containerPath);
+        }
         if (childrenEl) {
-          childrenEl.querySelectorAll('.tree-checkbox').forEach(cb => {
+          childrenEl.querySelectorAll('.tree-checkbox[data-container-path]').forEach(cb => {
             cb.checked = isChecked;
             cb.indeterminate = false;
+            if (cb.dataset.containerPath) {
+              if (isChecked) taskSelectedFoldersSet.add(cb.dataset.containerPath);
+              else taskSelectedFoldersSet.delete(cb.dataset.containerPath);
+            }
           });
         }
         updateParentCheckboxStates(targetContainerEl);
-        updateSelectedCount();
+        renderTaskSelectedChips();
       });
     }
 
@@ -522,8 +526,71 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
 
   if (isSelectable) {
     updateParentCheckboxStates(targetContainerEl);
-    updateSelectedCount();
+    renderTaskSelectedChips();
   }
+}
+
+const taskSelectedFoldersSet = new Set();
+
+function renderTaskSelectedChips() {
+  const tray = document.getElementById('task-selected-chips-tray');
+  const countBadge = document.getElementById('task-selected-badge-count');
+  const modalCount = document.getElementById('modal-selected-count');
+  const input = document.getElementById('task-source-input');
+  if (!tray) return;
+
+  const folders = Array.from(taskSelectedFoldersSet);
+  if (countBadge) countBadge.textContent = folders.length;
+  if (modalCount) modalCount.textContent = `${folders.length} folder(s) selected`;
+  if (input) input.value = folders.join(', ');
+
+  if (folders.length === 0) {
+    tray.innerHTML = '<span class="opacity-60 text-xs" id="task-no-folders-msg">No folders selected yet. Check folders in tree below or use Quick Add.</span>';
+    return;
+  }
+
+  tray.innerHTML = folders.map(f => {
+    const isDrive = f.startsWith('/hostfs/') || /^[A-Z]:/i.test(f);
+    const icon = isDrive ? '💾' : '📁';
+    return `
+      <div class="task-folder-chip" title="${escapeHtml(f)}">
+        <span>${icon}</span>
+        <span style="max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(f)}</span>
+        <button type="button" class="chip-remove-btn" onclick="removeTaskFolder('${escapeHtml(f)}')" title="Remove this folder">&times;</button>
+      </div>
+    `;
+  }).join('');
+}
+
+function addTaskFolder(path) {
+  if (!path) return;
+  const p = path.trim();
+  if (!p) return;
+  taskSelectedFoldersSet.add(p);
+  renderTaskSelectedChips();
+  syncTreeFromSelectedFolders();
+}
+
+function removeTaskFolder(path) {
+  taskSelectedFoldersSet.delete(path);
+  renderTaskSelectedChips();
+  syncTreeFromSelectedFolders();
+}
+
+function clearAllTaskFolders() {
+  taskSelectedFoldersSet.clear();
+  renderTaskSelectedChips();
+  syncTreeFromSelectedFolders();
+}
+
+function syncTreeFromSelectedFolders() {
+  const container = document.getElementById('modal-container-tree');
+  if (!container) return;
+  const allCheckboxes = container.querySelectorAll('.tree-checkbox[data-container-path]');
+  allCheckboxes.forEach(cb => {
+    cb.checked = taskSelectedFoldersSet.has(cb.dataset.containerPath);
+  });
+  updateParentCheckboxStates(container);
 }
 
 function updateParentCheckboxStates(containerEl) {
@@ -552,20 +619,11 @@ function updateParentCheckboxStates(containerEl) {
 }
 
 function updateSelectedCount() {
-  const container = document.getElementById('modal-container-tree');
-  if (!container) return;
-  const checkedLeaves = container.querySelectorAll('.tree-checkbox[data-container-path]:checked');
-  const badge = document.getElementById('modal-selected-count');
-  if (badge) {
-    badge.textContent = `${checkedLeaves.length} container(s) selected`;
-  }
+  renderTaskSelectedChips();
 }
 
 function getSelectedContainersFromTree() {
-  const container = document.getElementById('modal-container-tree');
-  if (!container) return [];
-  const checkedLeaves = container.querySelectorAll('.tree-checkbox[data-container-path]:checked');
-  return Array.from(checkedLeaves).map(cb => cb.dataset.containerPath);
+  return Array.from(taskSelectedFoldersSet);
 }
 
 function renderDashboardTreeExplorer() {
@@ -690,10 +748,13 @@ async function fetchSingleRemoteQuota(remoteName, attempt) {
   const MAX_ATTEMPTS = 4;
   const RETRY_DELAYS_MS = [2000, 4000, 8000, 15000];
 
-  if (attempt === 0) remoteQuotaFetchingSet.add(remoteName);
+  if (attempt === 0) {
+    remoteQuotaFetchingSet.add(remoteName);
+    renderRemotesStatusGrid();
+  }
 
   try {
-    const res = await fetch(`/api/remotes/${remoteName}/about`);
+    const res = await fetch(`/api/remotes/${encodeURIComponent(remoteName)}/about`);
     const data = await res.json();
 
     if (data.success) {
@@ -703,13 +764,17 @@ async function fetchSingleRemoteQuota(remoteName, attempt) {
     } else if (data.pending && attempt < MAX_ATTEMPTS) {
       setTimeout(() => fetchSingleRemoteQuota(remoteName, attempt + 1), RETRY_DELAYS_MS[attempt]);
     } else {
+      remoteQuotaMap[remoteName] = data;
       remoteQuotaFetchingSet.delete(remoteName);
+      renderRemotesStatusGrid();
     }
   } catch (e) {
     if (attempt < MAX_ATTEMPTS) {
       setTimeout(() => fetchSingleRemoteQuota(remoteName, attempt + 1), RETRY_DELAYS_MS[attempt]);
     } else {
+      remoteQuotaMap[remoteName] = { success: false, error: e.message };
       remoteQuotaFetchingSet.delete(remoteName);
+      renderRemotesStatusGrid();
     }
   }
 }
@@ -786,10 +851,28 @@ function renderRemotesStatusGrid() {
           <span>⏳</span> Fetching capacity metric...
         </div>
       `;
+    } else if (quota && quota.success === false) {
+      quotaHtml = `
+        <div style="margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+          <span style="color: #cbd5e1; font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Quota: ${escapeHtml(quota.error || 'Unavailable')}</span>
+          <button type="button" class="btn btn-sm btn-outline" style="font-size: 0.68rem; padding: 0.1rem 0.4rem; color: #38bdf8; border-color: rgba(56,189,248,0.3); white-space: nowrap;" onclick="fetchSingleRemoteQuota('${escapeHtml(remoteName)}', 0)">
+            🔄 Retry
+          </button>
+        </div>
+      `;
     } else if (status && status.success === false) {
       quotaHtml = `
         <div style="margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: #fb7185;">
           ⚠️ Authentication token expired or revoked. Click "Re-Authorize" below to refresh token.
+        </div>
+      `;
+    } else {
+      quotaHtml = `
+        <div style="margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center;">
+          <span>Capacity: <em>Not queried yet</em></span>
+          <button type="button" class="btn btn-sm btn-outline" style="font-size: 0.68rem; padding: 0.1rem 0.4rem; color: #38bdf8; border-color: rgba(56,189,248,0.3);" onclick="fetchSingleRemoteQuota('${escapeHtml(remoteName)}', 0)">
+            ⚡ Query Quota
+          </button>
         </div>
       `;
     }
@@ -828,6 +911,49 @@ function renderRemotesStatusGrid() {
   }).join('');
 }
 
+let activeReauthMode = 'standard';
+
+function switchReauthMode(mode) {
+  activeReauthMode = mode;
+  const standardBtn = document.getElementById('btn-reauth-mode-standard');
+  const customBtn = document.getElementById('btn-reauth-mode-custom');
+  const cmdEl = document.getElementById('reauth-cmd-code');
+  const descTitle = document.getElementById('reauth-mode-desc-title');
+  const descSub = document.getElementById('reauth-mode-desc-sub');
+  const remoteName = document.getElementById('reauth-remote-name')?.value;
+  const remoteType = document.getElementById('reauth-remote-type')?.value || 'drive';
+
+  if (standardBtn && customBtn) {
+    standardBtn.classList.toggle('active', mode === 'standard');
+    customBtn.classList.toggle('active', mode === 'custom');
+  }
+
+  const detail = remotesDetails.find(d => d.name === remoteName) || { type: remoteType, details: {} };
+  const clientId = detail.details?.client_id || '';
+  const clientSecret = detail.details?.client_secret || '';
+
+  if (mode === 'standard') {
+    if (descTitle) descTitle.textContent = '⚡ Standard Authorization (Permanent & Recommended)';
+    if (descSub) descSub.textContent = 'Uses rclone\'s built-in permanent OAuth app. Token refresh never expires or fails:';
+    let cmd = `rclone authorize "${detail.type || remoteType}"`;
+    if ((detail.type || remoteType) === 'pcloud') {
+      cmd = `rclone authorize "pcloud" "hostname" "eapi.pcloud.com"`;
+    }
+    if (cmdEl) cmdEl.textContent = cmd;
+  } else {
+    if (descTitle) descTitle.textContent = '🔑 Custom Google Cloud Project Credentials';
+    if (descSub) descSub.textContent = clientId 
+      ? `Using custom client ID "${clientId.slice(0, 20)}...". Generated token will match your custom project:`
+      : 'No custom client ID configured for this remote. Enter custom client credentials or use standard mode:';
+    
+    if (clientId && clientSecret) {
+      if (cmdEl) cmdEl.textContent = `rclone authorize "${detail.type || remoteType}" "${clientId}" "${clientSecret}"`;
+    } else {
+      if (cmdEl) cmdEl.textContent = `rclone authorize "${detail.type || remoteType}"`;
+    }
+  }
+}
+
 function openReauthRemoteModal(remoteName, remoteType = 'drive') {
   const modal = document.getElementById('modal-reauth-remote');
   if (!modal) return;
@@ -835,7 +961,6 @@ function openReauthRemoteModal(remoteName, remoteType = 'drive') {
   const titleEl = document.getElementById('reauth-remote-name-title');
   const nameInput = document.getElementById('reauth-remote-name');
   const typeInput = document.getElementById('reauth-remote-type');
-  const cmdEl = document.getElementById('reauth-cmd-code');
   const tokenInput = document.getElementById('reauth-token-input');
 
   if (titleEl) titleEl.textContent = remoteName;
@@ -843,23 +968,28 @@ function openReauthRemoteModal(remoteName, remoteType = 'drive') {
   if (typeInput) typeInput.value = remoteType;
   if (tokenInput) tokenInput.value = '';
 
-  let cmd = `rclone authorize "${remoteType}"`;
-  if (remoteType === 'pcloud') {
-    cmd = `rclone authorize "pcloud" "hostname" "eapi.pcloud.com"`;
-  }
-  if (cmdEl) cmdEl.textContent = cmd;
-
+  switchReauthMode('standard');
   modal.classList.add('active');
 }
 
 async function saveReauthorizedToken() {
   const remoteName = document.getElementById('reauth-remote-name')?.value;
-  const token = document.getElementById('reauth-token-input')?.value.trim();
+  let token = document.getElementById('reauth-token-input')?.value.trim();
   const btn = document.getElementById('btn-save-reauth');
 
   if (!remoteName || !token) {
     alert('Please paste the new token JSON or token string.');
     return;
+  }
+
+  // If user copied entire rclone terminal output, extract just the JSON object
+  const jsonMatch = token.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      token = JSON.stringify(JSON.parse(jsonMatch[0]));
+    } catch (e) {
+      token = jsonMatch[0].trim();
+    }
   }
 
   if (btn) {
@@ -868,18 +998,27 @@ async function saveReauthorizedToken() {
   }
 
   try {
+    const stripCustomClient = (activeReauthMode === 'standard');
     const res = await fetch(`/api/remotes/${encodeURIComponent(remoteName)}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token })
+      body: JSON.stringify({ token, stripCustomClient })
     });
-    const data = await res.json();
+
+    let data;
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      data = await res.json();
+    } else {
+      const text = await res.text();
+      throw new Error(`Server returned HTTP ${res.status}: ${text.slice(0, 120)}`);
+    }
 
     if (!res.ok || !data.success) {
       throw new Error(data.error || 'Failed to update remote token.');
     }
 
-    alert(`✅ Remote "${remoteName}" successfully re-authorized and reconnected!`);
+    alert(`✅ Remote "${remoteName}" successfully re-authorized and connected!`);
     document.getElementById('modal-reauth-remote')?.classList.remove('active');
     fetchRemotes(true);
     testSingleRemote(remoteName);
@@ -908,6 +1047,14 @@ async function fetchSettings() {
     }
     if (data.telegram_chat_id && document.getElementById('telegram-chat-id-input')) {
       document.getElementById('telegram-chat-id-input').value = data.telegram_chat_id;
+    }
+    const nodeName = data.device_name || data.device_name_default || 'Default';
+    if (document.getElementById('setting-device-name-input')) {
+      document.getElementById('setting-device-name-input').value = nodeName;
+    }
+    const headerBadge = document.getElementById('header-device-badge');
+    if (headerBadge) {
+      headerBadge.textContent = `💻 Node: ${nodeName}`;
     }
   } catch (e) {}
 }
@@ -1730,6 +1877,38 @@ function openTransferForRemote(remoteName) {
 
 // ─── Source Folder Browser (for Add Source modal) ───────────────────────────
 
+async function loadFolderBrowserDir(dirPath = '/hostfs') {
+  const listEl = document.getElementById('folder-browser-list');
+  const pathEl = document.getElementById('folder-browser-path');
+  const upBtn = document.getElementById('btn-folder-up');
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div class="cloud-browser-empty">⏳ Loading directory...</div>';
+
+  try {
+    const res = await fetch(`/api/sources/browse?path=${encodeURIComponent(dirPath)}`);
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      listEl.innerHTML = `<div class="cloud-browser-empty" style="color:#fb7185;">⚠️ Error reading directory: ${escapeHtml(data.error || 'Access denied or path not found')}</div>`;
+      return;
+    }
+
+    folderBrowserState.currentPath = data.path;
+    folderBrowserState.parentPath = data.parentPath;
+    folderBrowserState.itemsCache = data.items || [];
+    if (!folderBrowserState.selectedPaths) folderBrowserState.selectedPaths = new Set();
+
+    if (pathEl) pathEl.textContent = data.path;
+    if (upBtn) upBtn.disabled = !data.parentPath;
+
+    renderFolderBreadcrumbs(data.breadcrumbs, data.path);
+    renderFolderBrowserList(data.items);
+  } catch (err) {
+    listEl.innerHTML = `<div class="cloud-browser-empty" style="color:#fb7185;">⚠️ Network error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
 function renderFolderBreadcrumbs(breadcrumbs, currentPath) {
   const container = document.getElementById('folder-breadcrumbs-container');
   if (!container) return;
@@ -1942,6 +2121,32 @@ function setupEventListeners() {
   document.getElementById('btn-test-ntfy')?.addEventListener('click', () => sendTestNotificationChannel('ntfy'));
   document.getElementById('btn-test-discord')?.addEventListener('click', () => sendTestNotificationChannel('discord'));
   document.getElementById('btn-test-telegram')?.addEventListener('click', () => sendTestNotificationChannel('telegram'));
+  document.getElementById('btn-export-backup-bundle')?.addEventListener('click', exportHubSettings);
+  document.getElementById('btn-save-device-name')?.addEventListener('click', saveDeviceName);
+
+  // Quick Folder Adder in Task Modal
+  document.getElementById('btn-task-add-quick-path')?.addEventListener('click', () => {
+    const input = document.getElementById('task-quick-add-input');
+    if (input && input.value.trim()) {
+      addTaskFolder(input.value.trim());
+      input.value = '';
+    }
+  });
+
+  document.getElementById('task-quick-add-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.target.value.trim()) {
+        addTaskFolder(e.target.value.trim());
+        e.target.value = '';
+      }
+    }
+  });
+
+  document.getElementById('btn-task-clear-all-sources')?.addEventListener('click', clearAllTaskFolders);
+
+  // Initialize Backup Import UI file watcher
+  setupBackupImportUI();
 
   // Delegated clicks for trigger remotes buttons across empty states and UI cards
   document.addEventListener('click', (e) => {
@@ -2390,9 +2595,16 @@ function openTaskModal(task = null) {
   const modal = document.getElementById('modal-task');
   modal.classList.add('active');
   document.getElementById('form-task').reset();
+  taskSelectedFoldersSet.clear();
 
   if (task) {
     const initialSelected = parseSourcePaths(task.source_path);
+    if (Array.isArray(initialSelected)) {
+      initialSelected.forEach(p => taskSelectedFoldersSet.add(p));
+    } else if (task.source_path) {
+      taskSelectedFoldersSet.add(task.source_path);
+    }
+
     document.getElementById('modal-task-title').textContent = 'Edit Backup Task';
     document.getElementById('task-id').value = task.id;
     document.getElementById('task-name').value = task.name;
@@ -2420,13 +2632,16 @@ function openTaskModal(task = null) {
     document.getElementById('task-cron').value = 'last_friday';
   }
 
+  renderTaskSelectedChips();
+
   const modalTreeContainer = document.getElementById('modal-container-tree');
   modalTreeContainer.innerHTML = '<div class="tree-loading">Loading mounted container paths...</div>';
 
   fetchSources().then(() => {
     const treeData = buildContainerTree(detectedSources);
-    let initialSelected = task ? parseSourcePaths(task.source_path) : [];
+    const initialSelected = Array.from(taskSelectedFoldersSet);
     renderTreeWidget(treeData, modalTreeContainer, true, initialSelected);
+    renderTaskSelectedChips();
   }).catch(() => {
     modalTreeContainer.innerHTML = '<div class="opacity-60 text-sm">Loaded default container paths.</div>';
   });
@@ -2444,18 +2659,21 @@ async function handleTaskFormSubmit(e) {
   const id = document.getElementById('task-id').value;
   const name = document.getElementById('task-name').value.trim();
   
-  let source_path;
-  if (isCustomSourceMode) {
-    source_path = document.getElementById('task-source-input').value.trim();
-  } else {
-    const selectedTreeContainers = getSelectedContainersFromTree();
-    if (selectedTreeContainers.length === 0) {
-      alert('Error: Please select at least one container folder in the root/ tree view.');
-      return;
+  const selectedFolders = Array.from(taskSelectedFoldersSet);
+  if (selectedFolders.length === 0) {
+    // Fallback: check manual input field if populated
+    const manualInput = document.getElementById('task-source-input')?.value.trim();
+    if (manualInput) {
+      manualInput.split(',').map(s => s.trim()).filter(Boolean).forEach(f => selectedFolders.push(f));
     }
-    source_path = selectedTreeContainers;
   }
 
+  if (selectedFolders.length === 0) {
+    alert('Error: Please select or add at least one source folder to backup.');
+    return;
+  }
+
+  const source_path = selectedFolders.length === 1 ? selectedFolders[0] : selectedFolders;
   const target_remote = document.getElementById('task-remote').value;
   const target_path = document.getElementById('task-target-path').value.trim();
   const mode = document.getElementById('task-mode').value;
@@ -2469,9 +2687,6 @@ async function handleTaskFormSubmit(e) {
   }
 
   if (!name) { alert('Error: Please enter a Task Name.'); return; }
-  if (!source_path || (Array.isArray(source_path) && source_path.length === 0)) {
-    alert('Error: Please select or enter at least one source container path.'); return;
-  }
   if (!target_remote) { alert('Error: Please select a Destination Cloud Remote.'); return; }
 
   const payload = { name, source_path, target_remote, target_path, mode, conflict_mode, cron_schedule, priority, bw_limit, enabled: 1 };
@@ -2532,13 +2747,106 @@ async function deleteTask(taskId) {
 }
 
 function switchSettingsModalTab(tabName) {
-  const tabs = ['remotes', 'notifications', 'security'];
+  const tabs = ['remotes', 'notifications', 'security', 'backup'];
   tabs.forEach(t => {
     const btn = document.getElementById(`tab-btn-settings-${t}`);
     const content = document.getElementById(`tab-settings-${t}`);
     if (btn) btn.classList.toggle('active', t === tabName);
     if (content) content.classList.toggle('hidden', t !== tabName);
   });
+}
+
+async function exportHubSettings() {
+  try {
+    appendConsoleLine('[System] Preparing AutoBackup Hub export bundle...', 'system');
+    const res = await fetch('/api/backup/export');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const disposition = res.headers.get('content-disposition');
+    let filename = 'autobackup-hub-export.json';
+    if (disposition && disposition.includes('filename=')) {
+      filename = disposition.split('filename=')[1].replace(/["']/g, '').trim();
+    }
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    a.remove();
+    appendConsoleLine('[System] ✅ Backup Hub configuration exported successfully.', 'system');
+  } catch (err) {
+    alert('Failed to export configuration: ' + err.message);
+    appendConsoleLine(`[System] ❌ Export error: ${err.message}`, 'error');
+  }
+}
+
+let stagedImportBundle = null;
+
+function setupBackupImportUI() {
+  const fileInput = document.getElementById('input-import-backup-file');
+  const label = document.getElementById('import-file-name-label');
+  const btnExecute = document.getElementById('btn-execute-import-bundle');
+
+  if (fileInput) {
+    fileInput.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (label) label.textContent = file.name;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          stagedImportBundle = JSON.parse(event.target.result);
+          if (btnExecute) btnExecute.disabled = false;
+        } catch (parseErr) {
+          alert('Invalid JSON file. Please select a valid AutoBackup export .json bundle.');
+          if (btnExecute) btnExecute.disabled = true;
+        }
+      };
+      reader.readAsText(file);
+    };
+  }
+
+  if (btnExecute) {
+    btnExecute.onclick = async () => {
+      if (!stagedImportBundle) return;
+      if (!confirm('Are you sure you want to restore this configuration? This will import tasks, sources, webhooks, and cloud remotes into this instance.')) return;
+
+      btnExecute.disabled = true;
+      btnExecute.textContent = '⏳ Restoring...';
+      try {
+        const res = await fetch('/api/backup/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(stagedImportBundle)
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Import failed');
+
+        alert(`✅ ${data.message}`);
+        appendConsoleLine(`[System] ✅ ${data.message}`, 'system');
+        await fetchTasks();
+        await fetchSources();
+        await fetchRemotes(true);
+        await fetchSettings();
+      } catch (err) {
+        alert('Restore failed: ' + err.message);
+        appendConsoleLine(`[System] ❌ Restore error: ${err.message}`, 'error');
+      } finally {
+        btnExecute.disabled = false;
+        btnExecute.textContent = 'Restore & Apply Now';
+      }
+    };
+  }
+}
+
+async function saveDeviceName() {
+  const input = document.getElementById('setting-device-name-input');
+  if (!input) return;
+  const name = input.value.trim();
+  await saveSettingKey({ device_name: name }, `Device Node Name updated to "${name || 'Default'}"!`);
 }
 
 function switchRemoteAddTab(tab) {
