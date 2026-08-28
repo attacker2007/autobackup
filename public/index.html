@@ -903,26 +903,46 @@
       </div>
 
       <div class="form-group">
-        <label>Windows / Host Path(s) <span style="color:var(--text-dim); font-weight:400;">(e.g. C:\Users\Dr\Documents or F:\Code)</span></label>
-        <input type="text" id="source-host-path-input" placeholder="C:\Users\Dr\Documents\NewProject">
-        <span class="form-help">Container mapping: <code style="color: var(--accent-cyan);" id="source-container-path-preview">/hostfs/C/Users/Dr/Documents/NewProject</code></span>
+        <label>Windows / Host Path(s) or Container Path <span style="color:var(--text-dim); font-weight:400;">(e.g. C:\Users\Dr\Documents, F:\Code, or /backup_sources)</span></label>
+        <input type="text" id="source-host-path-input" placeholder="C:\Users\Dr\Documents\NewProject or /backup_sources">
+        
+        <!-- Live Container Mapping Progress Card -->
+        <div id="source-mapping-card" style="margin-top: 0.45rem; padding: 0.6rem 0.8rem; background: rgba(0,0,0,0.35); border: 1px solid rgba(0, 242, 254, 0.2); border-radius: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+            <span style="font-size: 0.74rem; font-weight: 700; color: #94a3b8; display: flex; align-items: center; gap: 0.35rem;">
+              <span>🔗</span> Container Mapping Progress &amp; Route:
+            </span>
+            <span id="source-mapping-status-pill" style="font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.45rem; border-radius: 4px; background: rgba(0, 242, 254, 0.15); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 254, 0.3);">
+              Ready to Map
+            </span>
+          </div>
+          <div id="source-container-path-preview" style="font-family: var(--font-mono); font-size: 0.78rem; color: #38bdf8; word-break: break-all; margin-bottom: 0.2rem;">
+            (Enter path above or select subfolders below)
+          </div>
+          <div id="source-mapping-explanation" style="font-size: 0.71rem; color: var(--text-dim); line-height: 1.35;">
+            Local Windows paths (e.g. <code>C:\...</code>) translate to Docker volume mounts (<code>/hostfs/C/...</code>). Direct container paths (e.g. <code>/backup_sources</code>) are preserved.
+          </div>
+        </div>
       </div>
 
       <div class="form-group">
         <label>Or Navigate &amp; Select Subfolders</label>
         <div class="tree-widget">
-          <!-- Quick jump drive bar -->
+          <!-- Dynamic quick jump drive & root bar -->
           <div style="display: flex; gap: 0.35rem; padding: 0.4rem 0.6rem; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.08); align-items: center; flex-wrap: wrap;">
-            <span style="font-size: 0.72rem; color: var(--text-dim); font-weight: 600;">Quick Jump:</span>
-            <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/hostfs')">🏠 Root</button>
-            <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/hostfs/C')">💾 C: Drive</button>
-            <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/hostfs/F')">💾 F: Drive</button>
+            <span style="font-size: 0.72rem; color: var(--text-dim); font-weight: 600;">Available Roots:</span>
+            <div id="folder-roots-pills" style="display: inline-flex; gap: 0.35rem; flex-wrap: wrap;">
+              <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/backup_sources')">📦 /backup_sources</button>
+              <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/hostfs')">💻 /hostfs</button>
+              <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/config')">⚙️ /config</button>
+              <button type="button" class="btn btn-sm btn-secondary" style="font-size: 0.72rem; padding: 0.15rem 0.45rem;" onclick="loadFolderBrowserDir('/')">🗂️ Root (/)</button>
+            </div>
           </div>
 
           <!-- Breadcrumbs Bar -->
           <div class="tree-header">
             <div id="folder-breadcrumbs-container" style="display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; flex: 1;">
-              <span id="folder-browser-path" style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--accent-cyan);">/hostfs</span>
+              <span id="folder-browser-path" style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--accent-cyan);">/</span>
             </div>
             <div style="display: flex; gap: 0.3rem;">
               <button type="button" class="btn btn-sm btn-secondary" id="btn-folder-select-all" onclick="toggleSelectAllFolderBrowser()">Select All</button>
@@ -931,7 +951,7 @@
           </div>
 
           <div class="tree-body" id="folder-browser-list">
-            <div class="tree-loading">Loading drives...</div>
+            <div class="tree-loading">Loading directories...</div>
           </div>
         </div>
       </div>

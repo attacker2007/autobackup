@@ -271,23 +271,26 @@ app.get('/api/sources', async (req, res) => {
 app.post('/api/sources', async (req, res) => {
   try {
     const body = req.body;
-    const sourcesToAdd = Array.isArray(body.sources) ? body.sources : (body.name && body.host_path ? [body] : []);
+    const sourcesToAdd = Array.isArray(body.sources) 
+      ? body.sources 
+      : (body.host_path || body.path ? [{ name: body.name || '', host_path: body.host_path || body.path }] : []);
 
     if (sourcesToAdd.length === 0) {
-      return res.status(400).json({ error: 'name and host_path (or sources array) are required' });
+      return res.status(400).json({ error: 'Folder path (host_path or sources array) is required' });
     }
 
     const inserted = [];
     for (const item of sourcesToAdd) {
-      if (!item.host_path) continue;
-      const itemName = item.name || path.basename(item.host_path) || 'Folder';
-      const container_path = hostPathToContainerPath(item.host_path);
+      const rawPath = (item.host_path || item.path || '').trim();
+      if (!rawPath) continue;
+      const itemName = (item.name && item.name.trim()) || path.basename(rawPath.replace(/\\/g, '/')) || 'Source Folder';
+      const container_path = hostPathToContainerPath(rawPath);
       const id = uuidv4();
       await db.run(
         'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?)',
-        [id, itemName.trim(), item.host_path.trim(), container_path]
+        [id, itemName, rawPath, container_path]
       );
-      inserted.push({ id, name: itemName, host_path: item.host_path, container_path });
+      inserted.push({ id, name: itemName, host_path: rawPath, container_path });
     }
 
     res.json({ success: true, count: inserted.length, sources: inserted });
@@ -309,60 +312,151 @@ app.delete('/api/sources/:id', async (req, res) => {
 });
 
 /**
- * Browse the local filesystem inside /hostfs/ for the folder picker UI.
- * Query: ?path=/hostfs/C/Users/Dr
+ * Detect available filesystem roots for container folder picker
+ */
+app.get('/api/sources/roots', (req, res) => {
+  try {
+    const candidates = [
+      { name: 'Host Drives (/hostfs)', path: '/hostfs', icon: '💻', desc: 'Host drive mounts (C:, D:, F:)' },
+      { name: 'Backup Sources', path: '/backup_sources', icon: '📦', desc: 'Default container backup mount' },
+      { name: 'Configuration & DB', path: '/config', icon: '⚙️', desc: 'AutoBackup settings & configs' },
+      { name: 'App Directory', path: '/app', icon: '📁', desc: 'Service application root' },
+      { name: 'Root Filesystem (/)', path: '/', icon: '🗂️', desc: 'Container root directory' }
+    ];
+
+    // On Windows development environment, also probe drive letters
+    if (process.platform === 'win32') {
+      ['C:', 'D:', 'E:', 'F:', 'G:'].forEach(d => {
+        if (fs.existsSync(d + '/')) {
+          candidates.push({ name: `${d} Drive (Local)`, path: d + '/', icon: '💾', desc: `Local ${d} Drive` });
+        }
+      });
+    }
+
+    const availableRoots = candidates.map(c => {
+      const exists = fs.existsSync(c.path);
+      let subDrives = [];
+      if (exists && c.path === '/hostfs') {
+        try {
+          const sub = fs.readdirSync('/hostfs', { withFileTypes: true });
+          subDrives = sub.filter(s => s.isDirectory()).map(s => `/hostfs/${s.name}`);
+        } catch (e) {}
+      }
+      return { ...c, exists, subDrives };
+    });
+
+    res.json(availableRoots);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Browse filesystem for folder picker UI
+ * Query: ?path=/hostfs/C/Users or ?path=/backup_sources
  */
 app.get('/api/sources/browse', (req, res) => {
   try {
-    const requestedPath = req.query.path || '/hostfs';
-    // Security: only allow browsing under /hostfs or known backup_sources paths
-    const safePaths = ['/hostfs', '/backup_sources'];
-    const isSafe = safePaths.some(sp => requestedPath.startsWith(sp));
-    if (!isSafe) {
-      return res.status(403).json({ error: 'Browse path must be under /hostfs or /backup_sources' });
+    let requestedPath = req.query.path || '';
+
+    // If no path requested, pick the first valid existing root
+    if (!requestedPath || requestedPath === 'default') {
+      const priorityRoots = ['/hostfs', '/backup_sources', '/config', '/app', '/'];
+      if (process.platform === 'win32') {
+        priorityRoots.unshift('F:/autobackup', 'C:/Users', 'C:/');
+      }
+      requestedPath = priorityRoots.find(p => fs.existsSync(p)) || '/';
     }
 
-    if (!fs.existsSync(requestedPath)) {
-      return res.json({ path: requestedPath, items: [], exists: false, breadcrumbs: [], parentPath: '/hostfs' });
+    // Normalise slashes
+    let normalized = path.normalize(requestedPath).replace(/\\/g, '/');
+    if (normalized.length > 1 && normalized.endsWith('/')) {
+      normalized = normalized.slice(0, -1);
+    }
+
+    if (!fs.existsSync(normalized)) {
+      const fallback = fs.existsSync('/backup_sources') ? '/backup_sources' : (fs.existsSync('/app') ? '/app' : '/');
+      return res.json({
+        path: normalized,
+        items: [],
+        exists: false,
+        fallbackPath: fallback,
+        breadcrumbs: [{ name: '🏠 Root', path: fallback }],
+        parentPath: null,
+        message: `Path ${normalized} does not exist in this container.`
+      });
     }
 
     // Build clickable breadcrumbs
-    const normalized = requestedPath.replace(/\/+/g, '/').replace(/\/$/, '') || '/hostfs';
     const parts = normalized.split('/').filter(Boolean);
     const breadcrumbs = [];
     let accum = '';
+
+    if (normalized.startsWith('/')) {
+      breadcrumbs.push({ name: '🗂️ /', path: '/' });
+    }
+
     for (const part of parts) {
-      accum += '/' + part;
+      accum += (accum === '/' ? '' : '/') + part;
       let label = part;
-      if (part === 'hostfs') label = '🏠 Host';
+      if (part === 'hostfs') label = '💻 Host Drives';
       else if (/^[A-Z]$/.test(part)) label = `💾 ${part}:`;
       breadcrumbs.push({ name: label, path: accum });
     }
 
     // Calculate parent path
     let parentPath = null;
-    if (normalized !== '/hostfs' && normalized !== '/backup_sources') {
+    if (normalized !== '/' && !/^[A-Za-z]:\/?$/.test(normalized)) {
       const lastSlash = normalized.lastIndexOf('/');
-      parentPath = lastSlash > 0 ? normalized.substring(0, lastSlash) : '/hostfs';
-      if (parentPath === '/hostfs/' || !parentPath) parentPath = '/hostfs';
+      if (lastSlash === 0) {
+        parentPath = '/';
+      } else if (lastSlash > 0) {
+        parentPath = normalized.substring(0, lastSlash);
+      }
     }
 
     let items = [];
     try {
-      const rawItems = fs.readdirSync(requestedPath, { withFileTypes: true });
+      const rawItems = fs.readdirSync(normalized, { withFileTypes: true });
       items = rawItems
-        .filter(item => item.isDirectory()) // Only show directories for folder picker
-        .map(item => ({
-          name: item.name,
-          path: path.join(requestedPath, item.name).replace(/\\/g, '/'),
-          isDir: true
-        }))
+        .map(item => {
+          const itemPath = (normalized === '/' ? `/${item.name}` : `${normalized}/${item.name}`).replace(/\/+/g, '/');
+          const isDir = item.isDirectory();
+          let count = null;
+          if (isDir) {
+            try {
+              const children = fs.readdirSync(itemPath);
+              count = children.length;
+            } catch (e) {}
+          }
+          return {
+            name: item.name,
+            path: itemPath,
+            isDir,
+            childCount: count
+          };
+        })
+        .filter(item => item.isDir) // Folder picker focuses on folders
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     } catch (readErr) {
-      return res.json({ path: requestedPath, items: [], exists: true, error: readErr.message, breadcrumbs, parentPath });
+      return res.json({
+        path: normalized,
+        items: [],
+        exists: true,
+        error: readErr.message,
+        breadcrumbs,
+        parentPath
+      });
     }
 
-    res.json({ path: requestedPath, items, exists: true, breadcrumbs, parentPath });
+    res.json({
+      path: normalized,
+      items,
+      exists: true,
+      itemCount: items.length,
+      breadcrumbs,
+      parentPath
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

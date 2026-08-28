@@ -1878,7 +1878,34 @@ function openTransferForRemote(remoteName) {
 
 // ─── Source Folder Browser (for Add Source modal) ───────────────────────────
 
-async function loadFolderBrowserDir(dirPath = '/hostfs') {
+async function loadAvailableRoots() {
+  const container = document.getElementById('folder-roots-pills');
+  if (!container) return;
+  try {
+    const res = await fetch('/api/sources/roots');
+    if (!res.ok) return;
+    const roots = await res.json();
+    const existing = roots.filter(r => r.exists);
+    if (existing.length === 0) return;
+
+    let html = '';
+    existing.forEach(r => {
+      if (r.path === '/hostfs' && r.subDrives && r.subDrives.length > 0) {
+        r.subDrives.forEach(d => {
+          const driveLetter = d.split('/').pop();
+          html += `<button type="button" class="btn btn-sm btn-secondary" style="font-size:0.72rem; padding:0.15rem 0.45rem;" onclick="loadFolderBrowserDir('${escapeHtml(d)}')">💾 ${driveLetter}: Drive</button>`;
+        });
+      } else {
+        html += `<button type="button" class="btn btn-sm btn-secondary" style="font-size:0.72rem; padding:0.15rem 0.45rem;" onclick="loadFolderBrowserDir('${escapeHtml(r.path)}')">${r.icon} ${escapeHtml(r.name.split(' ')[0])}</button>`;
+      }
+    });
+    container.innerHTML = html;
+  } catch (e) {
+    console.warn('Failed to load available roots:', e);
+  }
+}
+
+async function loadFolderBrowserDir(dirPath = 'default') {
   const listEl = document.getElementById('folder-browser-list');
   const pathEl = document.getElementById('folder-browser-path');
   const upBtn = document.getElementById('btn-folder-up');
@@ -1892,6 +1919,21 @@ async function loadFolderBrowserDir(dirPath = '/hostfs') {
 
     if (!res.ok || data.error) {
       listEl.innerHTML = `<div class="cloud-browser-empty" style="color:#fb7185;">⚠️ Error reading directory: ${escapeHtml(data.error || 'Access denied or path not found')}</div>`;
+      return;
+    }
+
+    if (!data.exists) {
+      listEl.innerHTML = `
+        <div class="cloud-browser-empty" style="color:var(--text-muted);">
+          <div style="margin-bottom:0.4rem;">ℹ️ Path <code>${escapeHtml(data.path)}</code> is not mounted in this container.</div>
+          <button type="button" class="btn btn-xs btn-primary" onclick="loadFolderBrowserDir('${escapeHtml(data.fallbackPath || '/')}')">
+            Switch to ${escapeHtml(data.fallbackPath || '/')} ➔
+          </button>
+        </div>
+      `;
+      if (pathEl) pathEl.textContent = data.path;
+      if (upBtn) upBtn.disabled = true;
+      renderFolderBreadcrumbs(data.breadcrumbs || [], data.path);
       return;
     }
 
@@ -1944,7 +1986,12 @@ function renderFolderBrowserList(items) {
   if (!listEl) return;
 
   if (!items || items.length === 0) {
-    listEl.innerHTML = '<div class="cloud-browser-empty">No subfolders match your search.</div>';
+    listEl.innerHTML = `
+      <div class="cloud-browser-empty">
+        <div>📂 No subfolders found in this directory.</div>
+        <div style="font-size:0.74rem; color:var(--text-dim); margin-top:0.3rem;">You can select this folder using the path above or use the available roots bar.</div>
+      </div>
+    `;
     return;
   }
 
@@ -1953,12 +2000,17 @@ function renderFolderBrowserList(items) {
     const row = document.createElement('div');
     row.className = 'cloud-browser-item is-dir';
     const isChecked = folderBrowserState.selectedPaths.has(item.path);
+    const countBadge = (item.childCount !== null && item.childCount !== undefined)
+      ? `<span style="font-size:0.7rem; color:var(--text-dim); margin-left:0.35rem;">(${item.childCount} ${item.childCount === 1 ? 'item' : 'items'})</span>`
+      : '';
 
     row.innerHTML = `
       <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0;">
         <input type="checkbox" class="fb-item-checkbox" ${isChecked ? 'checked' : ''} style="cursor:pointer; transform: scale(1.15);">
         <span class="cb-icon" style="cursor: pointer; font-size: 1.1rem;">📁</span>
-        <span class="cb-name" style="cursor: pointer; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(item.name)}</span>
+        <span class="cb-name" style="cursor: pointer; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          ${escapeHtml(item.name)}${countBadge}
+        </span>
       </div>
       <button type="button" class="folder-nav-btn btn-open-subfolder" title="Navigate inside this folder">
         Open ➔
@@ -1979,7 +2031,9 @@ function renderFolderBrowserList(items) {
     // Click on name, icon, or Open button: Navigate deeper into subfolder
     const openAction = (e) => {
       e.stopPropagation();
-      folderBrowserState.history.push(folderBrowserState.currentPath);
+      if (folderBrowserState.currentPath) {
+        folderBrowserState.history.push(folderBrowserState.currentPath);
+      }
       loadFolderBrowserDir(item.path);
     };
 
@@ -1996,7 +2050,7 @@ function toggleSelectAllFolderBrowser() {
   if (!folderBrowserState.selectedPaths) folderBrowserState.selectedPaths = new Set();
 
   const currentItems = folderBrowserState.itemsCache;
-  const allChecked = currentItems.every(item => folderBrowserState.selectedPaths.has(item.path));
+  const allChecked = currentItems.length > 0 && currentItems.every(item => folderBrowserState.selectedPaths.has(item.path));
 
   currentItems.forEach(item => {
     if (allChecked) {
@@ -2017,7 +2071,7 @@ function toggleSelectAllFolderBrowser() {
 }
 
 function folderBrowserGoUp() {
-  const target = folderBrowserState.parentPath || (folderBrowserState.currentPath ? folderBrowserState.currentPath.replace(/\/[^\/]+$/, '') : null) || '/hostfs';
+  const target = folderBrowserState.parentPath || (folderBrowserState.currentPath ? folderBrowserState.currentPath.replace(/\/[^\/]+$/, '') : null) || '/';
   loadFolderBrowserDir(target);
 }
 
@@ -2025,10 +2079,14 @@ function updateSourceModalButtonState() {
   const saveBtn = document.getElementById('btn-save-source');
   const pathInput = document.getElementById('source-host-path-input');
   const preview = document.getElementById('source-container-path-preview');
+  const statusPill = document.getElementById('source-mapping-status-pill');
 
-  if (!folderBrowserState || !folderBrowserState.selectedPaths) return;
+  if (!folderBrowserState) return;
+  if (!folderBrowserState.selectedPaths) folderBrowserState.selectedPaths = new Set();
 
   const count = folderBrowserState.selectedPaths.size;
+  const rawValue = pathInput ? pathInput.value.trim() : '';
+
   if (count > 0 && pathInput) {
     const selectedArray = Array.from(folderBrowserState.selectedPaths);
     const hostPaths = selectedArray.map(p => {
@@ -2045,10 +2103,48 @@ function updateSourceModalButtonState() {
     if (preview) {
       preview.textContent = selectedArray.join(', ');
     }
+    if (statusPill) {
+      statusPill.textContent = `🟢 ${count} Subfolder(s) Selected`;
+      statusPill.style.background = 'rgba(16, 185, 129, 0.2)';
+      statusPill.style.color = '#34d399';
+      statusPill.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+    }
+  } else if (rawValue) {
+    const rawList = rawValue.split(',').map(s => s.trim()).filter(Boolean);
+    const previews = rawList.map(item => {
+      const normalised = item.replace(/\\/g, '/');
+      const driveMatch = normalised.match(/^([A-Za-z]):\/?(.*)$/);
+      if (driveMatch) {
+        const drive = driveMatch[1].toUpperCase();
+        const rest = driveMatch[2].replace(/^\//, '');
+        return rest ? `/hostfs/${drive}/${rest}` : `/hostfs/${drive}`;
+      }
+      return item;
+    });
+    if (preview) {
+      preview.textContent = previews.join(', ');
+    }
+    if (statusPill) {
+      const isHostPath = rawValue.includes(':') || rawValue.includes('\\');
+      statusPill.textContent = isHostPath ? '💻 Host Volume Route (/hostfs/...)' : '📦 Direct Container Mount';
+      statusPill.style.background = 'rgba(0, 242, 254, 0.15)';
+      statusPill.style.color = 'var(--accent-cyan)';
+      statusPill.style.borderColor = 'rgba(0, 242, 254, 0.3)';
+    }
+  } else {
+    if (preview) {
+      preview.textContent = '(Enter path above or select subfolders below)';
+    }
+    if (statusPill) {
+      statusPill.textContent = 'Waiting for Path';
+      statusPill.style.background = 'rgba(255, 255, 255, 0.05)';
+      statusPill.style.color = 'var(--text-dim)';
+      statusPill.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+    }
   }
 
   if (saveBtn) {
-    const hasPath = (pathInput && pathInput.value.trim().length > 0) || count > 0;
+    const hasPath = rawValue.length > 0 || count > 0;
     saveBtn.disabled = !hasPath;
   }
 }
@@ -2066,13 +2162,14 @@ function openAddSourceModal() {
 
   if (nameInput) nameInput.value = '';
   if (pathInput) pathInput.value = '';
-  if (preview) preview.textContent = '';
+  if (preview) preview.textContent = '(Enter path above or select subfolders below)';
 
-  folderBrowserState.currentPath = '/hostfs';
+  folderBrowserState.currentPath = 'default';
   folderBrowserState.history = [];
   folderBrowserState.selectedPaths = new Set();
   updateSourceModalButtonState();
-  loadFolderBrowserDir('/hostfs');
+  loadAvailableRoots();
+  loadFolderBrowserDir('default');
 
   // Set up OS File Explorer Picker listener
   const osPickerInput = document.getElementById('input-os-folder-picker');
@@ -2087,6 +2184,7 @@ function openAddSourceModal() {
         if (nameInput && !nameInput.value) nameInput.value = rootFolder;
         if (pathInput && !pathInput.value) {
           pathInput.value = `C:\\Users\\Dr\\Documents\\${rootFolder}`;
+          updateSourceModalButtonState();
         }
       }
     };
@@ -2119,6 +2217,12 @@ async function saveSourceFolder() {
     return;
   }
 
+  const saveBtn = document.getElementById('btn-save-source');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = '⏳ Adding...';
+  }
+
   try {
     const res = await fetch('/api/sources', {
       method: 'POST',
@@ -2126,15 +2230,20 @@ async function saveSourceFolder() {
       body: JSON.stringify({ sources: sourcesToAdd })
     });
     const data = await res.json();
-    if (data.error) {
-      alert('Error: ' + data.error);
+    if (!res.ok || data.error) {
+      alert('Error: ' + (data.error || 'Failed to add source'));
       return;
     }
     document.getElementById('modal-add-source').classList.remove('active');
     await fetchSources();
-    appendConsoleLine(`[System] Added ${data.count} source folder(s) successfully!`, 'system');
+    appendConsoleLine(`[System] ✅ Added ${data.count} source folder(s) successfully!`, 'system');
   } catch (err) {
     alert('Failed to add source(s): ' + err.message);
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Add Source Folder';
+    }
   }
 }
 
@@ -2477,25 +2586,9 @@ function setupEventListeners() {
   // Folder browser Up button
   document.getElementById('btn-folder-up')?.addEventListener('click', folderBrowserGoUp);
 
-  // Source path input live preview
-  document.getElementById('source-host-path-input')?.addEventListener('input', (e) => {
-    const val = e.target.value.trim();
-    const preview = document.getElementById('source-container-path-preview');
-    if (!preview) return;
-    if (!val) { preview.textContent = ''; return; }
-
-    const rawList = val.split(',').map(s => s.trim()).filter(Boolean);
-    const previews = rawList.map(item => {
-      const normalised = item.replace(/\\/g, '/');
-      const driveMatch = normalised.match(/^([A-Za-z]):\/?(.*)$/);
-      if (driveMatch) {
-        const drive = driveMatch[1].toUpperCase();
-        const rest = driveMatch[2].replace(/^\//, '');
-        return rest ? `/hostfs/${drive}/${rest}` : `/hostfs/${drive}`;
-      }
-      return item;
-    });
-    preview.textContent = previews.join(', ');
+  // Source path input live preview & validation state
+  document.getElementById('source-host-path-input')?.addEventListener('input', () => {
+    updateSourceModalButtonState();
   });
 }
 
