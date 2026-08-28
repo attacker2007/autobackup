@@ -2020,6 +2020,38 @@ function folderBrowserGoUp() {
   loadFolderBrowserDir(target);
 }
 
+function updateSourceModalButtonState() {
+  const saveBtn = document.getElementById('btn-save-source');
+  const pathInput = document.getElementById('source-host-path-input');
+  const preview = document.getElementById('source-container-path-preview');
+
+  if (!folderBrowserState || !folderBrowserState.selectedPaths) return;
+
+  const count = folderBrowserState.selectedPaths.size;
+  if (count > 0 && pathInput) {
+    const selectedArray = Array.from(folderBrowserState.selectedPaths);
+    const hostPaths = selectedArray.map(p => {
+      const match = p.match(/^\/hostfs\/([A-Za-z])(?:\/(.*))?$/);
+      if (match) {
+        const drive = match[1].toUpperCase();
+        const rest = match[2] ? match[2].replace(/\//g, '\\') : '';
+        return rest ? `${drive}:\\${rest}` : `${drive}:\\`;
+      }
+      return p;
+    });
+
+    pathInput.value = hostPaths.join(', ');
+    if (preview) {
+      preview.textContent = selectedArray.join(', ');
+    }
+  }
+
+  if (saveBtn) {
+    const hasPath = (pathInput && pathInput.value.trim().length > 0) || count > 0;
+    saveBtn.disabled = !hasPath;
+  }
+}
+
 // ─── Add Source Modal ────────────────────────────────────────────────────────
 
 function openAddSourceModal() {
