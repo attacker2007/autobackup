@@ -43,7 +43,8 @@ async function initApp() {
     fetchSources(),
     fetchHistoryLogs(),
     fetchSettings(),
-    fetchStorageAlerts()
+    fetchStorageAlerts(),
+    fetchAppVersion()
   ]);
 }
 
@@ -2779,13 +2780,111 @@ async function deleteTask(taskId) {
 }
 
 function switchSettingsModalTab(tabName) {
-  const tabs = ['remotes', 'notifications', 'security', 'backup'];
+  const tabs = ['remotes', 'notifications', 'security', 'backup', 'version'];
   tabs.forEach(t => {
     const btn = document.getElementById(`tab-btn-settings-${t}`);
     const content = document.getElementById(`tab-settings-${t}`);
     if (btn) btn.classList.toggle('active', t === tabName);
     if (content) content.classList.toggle('hidden', t !== tabName);
   });
+  if (tabName === 'version') {
+    fetchAppVersion();
+  }
+}
+
+let appVersionData = { version: '2.8.0', latestVersion: '2.8.0', isLatest: true };
+
+async function fetchAppVersion() {
+  try {
+    const res = await fetch('/api/version');
+    if (!res.ok) return;
+    const data = await res.json();
+    appVersionData = { ...appVersionData, ...data };
+    
+    // Update header version pill
+    const headerBadge = document.getElementById('header-version-badge');
+    if (headerBadge) {
+      headerBadge.textContent = `v${data.version || '2.8.0'}`;
+    }
+
+    // Update settings modal version display
+    const settingsVersionBadge = document.getElementById('settings-current-version');
+    if (settingsVersionBadge) {
+      settingsVersionBadge.textContent = `v${data.version || '2.8.0'}`;
+    }
+    const settingsNodeUptime = document.getElementById('settings-version-uptime');
+    if (settingsNodeUptime && data.uptime !== undefined) {
+      const hours = Math.floor(data.uptime / 3600);
+      const mins = Math.floor((data.uptime % 3600) / 60);
+      settingsNodeUptime.textContent = `${hours}h ${mins}m active`;
+    }
+  } catch (err) {
+    console.warn('Failed to fetch app version:', err);
+  }
+}
+
+async function checkAppUpdates(isManual = false) {
+  const checkStatusEl = document.getElementById('version-check-status');
+  const btnCheck = document.getElementById('btn-check-updates');
+  if (btnCheck) {
+    btnCheck.disabled = true;
+    btnCheck.innerHTML = '⏳ Checking...';
+  }
+  if (checkStatusEl) {
+    checkStatusEl.innerHTML = '<span style="color:var(--accent-cyan);">Checking GitHub releases &amp; registry...</span>';
+  }
+
+  try {
+    const res = await fetch('/api/version/check');
+    const data = await res.json();
+    appVersionData = { ...appVersionData, ...data };
+
+    if (btnCheck) {
+      btnCheck.disabled = false;
+      btnCheck.innerHTML = '🔄 Check for Updates';
+    }
+
+    if (data.isLatest) {
+      if (checkStatusEl) {
+        checkStatusEl.innerHTML = `<span style="color:#34d399; font-weight:600;">✅ You are running the latest version (v${escapeHtml(data.currentVersion)})</span>`;
+      }
+      const headerBadge = document.getElementById('header-version-badge');
+      if (headerBadge) {
+        headerBadge.className = 'version-pill';
+        headerBadge.title = `AutoBackup Hub v${data.currentVersion} • Up to date`;
+      }
+    } else {
+      if (checkStatusEl) {
+        checkStatusEl.innerHTML = `
+          <div style="background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); padding:0.6rem 0.8rem; border-radius:6px; margin-top:0.4rem;">
+            <div style="color:#fbbf24; font-weight:700; font-size:0.85rem; margin-bottom:0.25rem;">
+              🚀 New Version Available: <strong>v${escapeHtml(data.latestVersion)}</strong>
+            </div>
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.4rem;">
+              Current: v${escapeHtml(data.currentVersion)} → Latest: v${escapeHtml(data.latestVersion)}
+            </div>
+            <a href="${escapeHtml(data.releaseUrl || 'https://github.com/attacker2007/autobackup/releases')}" target="_blank" rel="noopener" class="btn btn-sm btn-primary" style="display:inline-flex; align-items:center; gap:0.3rem;">
+              View Release on GitHub →
+            </a>
+          </div>
+        `;
+      }
+      const headerBadge = document.getElementById('header-version-badge');
+      if (headerBadge) {
+        headerBadge.className = 'version-pill update-available';
+        headerBadge.innerHTML = `v${escapeHtml(data.currentVersion)} <span class="update-dot"></span>`;
+        headerBadge.title = `New version v${data.latestVersion} available! Click to view.`;
+      }
+    }
+  } catch (err) {
+    if (btnCheck) {
+      btnCheck.disabled = false;
+      btnCheck.innerHTML = '🔄 Check for Updates';
+    }
+    if (checkStatusEl) {
+      checkStatusEl.innerHTML = `<span style="color:#f87171;">Failed to check updates: ${escapeHtml(err.message)}</span>`;
+    }
+  }
 }
 
 async function exportHubSettings() {

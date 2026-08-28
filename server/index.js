@@ -633,6 +633,112 @@ app.post('/api/settings', async (req, res) => {
 });
 
 /**
+ * Version control & system information
+ */
+app.get('/api/version', (req, res) => {
+  try {
+    const pkg = require('../package.json');
+    res.json({
+      name: pkg.name,
+      version: pkg.version || '2.8.0',
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      uptime: Math.floor(process.uptime()),
+      dockerImage: 'ghcr.io/attacker2007/autobackup:latest',
+      repoUrl: 'https://github.com/attacker2007/autobackup'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Check for updates against remote GitHub repository releases/tags
+ */
+app.get('/api/version/check', async (req, res) => {
+  try {
+    const pkg = require('../package.json');
+    const currentVersion = pkg.version || '2.8.0';
+
+    const semverCompare = (v1, v2) => {
+      const clean = v => (v || '').replace(/^[vV]/, '').trim();
+      const p1 = clean(v1).split('.').map(n => parseInt(n, 10) || 0);
+      const p2 = clean(v2).split('.').map(n => parseInt(n, 10) || 0);
+      for (let i = 0; i < 3; i++) {
+        const num1 = p1[i] || 0;
+        const num2 = p2[i] || 0;
+        if (num1 > num2) return 1;
+        if (num1 < num2) return -1;
+      }
+      return 0;
+    };
+
+    let latestVersion = currentVersion;
+    let releaseName = `v${currentVersion}`;
+    let releaseUrl = 'https://github.com/attacker2007/autobackup/releases';
+    let releaseNotes = '';
+    let publishedAt = null;
+
+    try {
+      const resp = await fetch('https://api.github.com/repos/attacker2007/autobackup/releases/latest', {
+        headers: {
+          'User-Agent': 'AutoBackup-Hub/' + currentVersion,
+          'Accept': 'application/vnd.github.v3+json'
+        },
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        latestVersion = (data.tag_name || '').replace(/^[vV]/, '') || currentVersion;
+        releaseName = data.name || data.tag_name || `v${latestVersion}`;
+        releaseUrl = data.html_url || releaseUrl;
+        releaseNotes = data.body || '';
+        publishedAt = data.published_at;
+      } else {
+        // Fallback to tags if no formal release published yet
+        const tagsResp = await fetch('https://api.github.com/repos/attacker2007/autobackup/tags', {
+          headers: {
+            'User-Agent': 'AutoBackup-Hub/' + currentVersion,
+            'Accept': 'application/vnd.github.v3+json'
+          },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (tagsResp.ok) {
+          const tags = await tagsResp.json();
+          if (tags && tags.length > 0) {
+            latestVersion = tags[0].name.replace(/^[vV]/, '');
+            releaseName = tags[0].name;
+          }
+        }
+      }
+    } catch (fetchErr) {
+      console.warn('Version check fetch error (offline or rate limited):', fetchErr.message);
+    }
+
+    const isLatest = semverCompare(currentVersion, latestVersion) >= 0;
+
+    res.json({
+      currentVersion,
+      latestVersion,
+      isLatest,
+      releaseName,
+      releaseUrl,
+      releaseNotes,
+      publishedAt
+    });
+  } catch (err) {
+    res.json({
+      currentVersion: require('../package.json').version || '2.8.0',
+      latestVersion: require('../package.json').version || '2.8.0',
+      isLatest: true,
+      error: err.message
+    });
+  }
+});
+
+/**
  * Export complete AutoBackup configuration bundle (tasks, settings, sources, rclone.conf)
  * Enables 1-click migration between local Docker and online/cloud Docker containers.
  */
@@ -650,8 +756,9 @@ app.get('/api/backup/export', async (req, res) => {
     const deviceSetting = settings.find(s => s.key === 'device_name');
     const deviceName = deviceSetting ? deviceSetting.value : (os.hostname() || 'Node');
 
+    const pkg = require('../package.json');
     const exportBundle = {
-      version: '2.5.0',
+      version: pkg.version || '2.8.0',
       exportedAt: new Date().toISOString(),
       sourceDevice: deviceName,
       tasks: tasks || [],

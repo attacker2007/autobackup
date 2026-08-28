@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=2.7.2">
+  <link rel="stylesheet" href="styles.css?v=2.8.0">
 </head>
 <body>
 
@@ -28,6 +28,7 @@
         <div class="brand-subtitle">
           <span>Multi-Cloud Sync Engine</span>
           <span class="device-node-pill" id="header-device-badge">💻 Node: Default</span>
+          <span class="version-pill" id="header-version-badge" title="AutoBackup Hub Version • Click to check updates" onclick="openRemotesModal(); switchSettingsModalTab('version');">v2.8.0</span>
         </div>
       </div>
     </div>
@@ -414,6 +415,9 @@
         <button type="button" class="modal-tab-btn" id="tab-btn-settings-backup" onclick="switchSettingsModalTab('backup')">
           💾 Migration &amp; Multi-Device
         </button>
+        <button type="button" class="modal-tab-btn" id="tab-btn-settings-version" onclick="switchSettingsModalTab('version')">
+          📦 Version &amp; Updates
+        </button>
       </div>
 
       <div class="remotes-body">
@@ -606,6 +610,71 @@
                 <button type="button" class="btn btn-sm btn-primary" id="btn-execute-import-bundle" disabled style="margin-left: auto;">
                   Restore Now
                 </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Tab 5: Version Control & Releases -->
+        <div id="tab-settings-version" class="hidden">
+          <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+            
+            <!-- Version Information Card -->
+            <div class="migration-card" style="border-color: rgba(99, 102, 241, 0.35);">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.6rem;">
+                <div>
+                  <h4 style="color: #a5b4fc; display: flex; align-items: center; gap: 0.4rem; font-size: 0.95rem; margin-bottom: 0.2rem;">
+                    <span>📦</span> AutoBackup Hub Version Control
+                  </h4>
+                  <p style="font-size: 0.76rem; color: var(--text-muted); margin: 0;">
+                    Automated multi-cloud sync &amp; backup container service
+                  </p>
+                </div>
+                <span class="version-pill" id="settings-current-version" style="font-size: 0.82rem; padding: 0.2rem 0.6rem;">v2.8.0</span>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.75rem;">
+                <div style="background: rgba(0,0,0,0.3); padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+                  <div style="font-size: 0.7rem; color: var(--text-dim);">DOCKER IMAGE REGISTRY</div>
+                  <div style="font-size: 0.78rem; font-family: var(--font-mono); color: #38bdf8; word-break: break-all; margin-top: 0.15rem;">
+                    ghcr.io/attacker2007/autobackup:latest
+                  </div>
+                </div>
+                <div style="background: rgba(0,0,0,0.3); padding: 0.5rem 0.7rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+                  <div style="font-size: 0.7rem; color: var(--text-dim);">CONTAINER UPTIME</div>
+                  <div style="font-size: 0.78rem; font-family: var(--font-mono); color: #34d399; margin-top: 0.15rem;" id="settings-version-uptime">
+                    Active
+                  </div>
+                </div>
+              </div>
+
+              <!-- Update Check Trigger & Status -->
+              <div id="version-check-status" style="margin-bottom: 0.65rem; font-size: 0.78rem;"></div>
+
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <button type="button" class="btn btn-sm btn-primary" id="btn-check-updates" onclick="checkAppUpdates(true)">
+                  🔄 Check for Updates
+                </button>
+                <a href="https://github.com/attacker2007/autobackup/releases" target="_blank" rel="noopener" class="btn btn-sm btn-secondary" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+                  <span>📋</span> View Changelog &amp; Releases
+                </a>
+                <a href="https://github.com/attacker2007/autobackup" target="_blank" rel="noopener" class="btn btn-sm btn-outline" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+                  <span>⭐</span> GitHub Repository
+                </a>
+              </div>
+            </div>
+
+            <!-- Railway / Cloud Deployment Note -->
+            <div class="migration-card" style="background: rgba(15, 23, 42, 0.4);">
+              <h5 style="color: #38bdf8; font-size: 0.85rem; margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.35rem;">
+                <span>🚀</span> Railway / Cloud Deployment Notes
+              </h5>
+              <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.4rem;">
+                When deploying on Railway, Docker containers automatically pull the latest image tagged with <code>latest</code> or rebuild from the <code>main</code> branch upon GitHub release publication.
+              </p>
+              <div style="background: rgba(0,0,0,0.35); padding: 0.4rem 0.6rem; border-radius: 4px; font-family: var(--font-mono); font-size: 0.72rem; color: #a7f3d0;">
+                docker pull ghcr.io/attacker2007/autobackup:latest
               </div>
             </div>
 
@@ -950,6 +1019,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=2.7.2"></script>
+  <script src="app.js?v=2.8.0"></script>
 </body>
 </html>
