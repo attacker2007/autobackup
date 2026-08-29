@@ -1,6 +1,6 @@
 /* ==========================================================================
    AutoBackup Hub — Premium Modern UI Design System
-   Sleek Obsidian & Cyber-Glass Aesthetic (v2.7.0)
+   Sleek Obsidian & Cyber-Glass Aesthetic (v2.8.1)
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -952,6 +952,42 @@ input[type="checkbox"] {
   border-radius: 3px;
   margin-left: 0.4rem;
   white-space: nowrap;
+}
+
+.tree-actions-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 0.5rem;
+}
+
+.btn-tree-action {
+  font-size: 0.68rem;
+  padding: 0.12rem 0.42rem;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  line-height: 1.2;
+  font-family: var(--font-sans);
+}
+
+.btn-tree-action:hover {
+  color: #fff;
+}
+
+.btn-tree-edit:hover {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #93c5fd;
+}
+
+.btn-tree-del:hover {
+  background: rgba(244, 63, 94, 0.25);
+  border-color: rgba(244, 63, 94, 0.6);
+  color: #fda4af;
 }
 
 .tree-children {

@@ -454,8 +454,20 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
       rowEl.appendChild(hostEl);
     }
 
-    // User-defined source delete button (in dashboard tree)
+    // User-defined source edit & delete buttons (in dashboard tree)
     if (!isSelectable && node.sourceId && node.sourceType === 'user') {
+      const actionGroup = document.createElement('div');
+      actionGroup.className = 'tree-actions-group';
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn-tree-action btn-tree-edit';
+      editBtn.textContent = '✎ Edit';
+      editBtn.title = 'Edit this source folder path or drive';
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openEditSourceModal(node.sourceId, node.name, node.hostPath);
+      });
+
       const delBtn = document.createElement('button');
       delBtn.className = 'btn-tree-action btn-tree-del';
       delBtn.textContent = '✕ Remove';
@@ -464,7 +476,10 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
         e.stopPropagation();
         deleteSourceFolder(node.sourceId);
       });
-      rowEl.appendChild(delBtn);
+
+      actionGroup.appendChild(editBtn);
+      actionGroup.appendChild(delBtn);
+      rowEl.appendChild(actionGroup);
     }
 
     nodeEl.appendChild(rowEl);
@@ -2149,7 +2164,32 @@ function updateSourceModalButtonState() {
   }
 }
 
-// ─── Add Source Modal ────────────────────────────────────────────────────────
+// ─── Add & Edit Source Modals ────────────────────────────────────────────────
+
+function isOnlineCloudBuild() {
+  const host = window.location.hostname;
+  return host !== 'localhost' && host !== '127.0.0.1' && !host.startsWith('192.168.') && !host.startsWith('10.') && !host.endsWith('.local');
+}
+
+function handleSourceDriveChange(e) {
+  const drive = e.target.value;
+  if (drive !== 'custom') {
+    localStorage.setItem('last_used_source_drive', drive);
+  }
+  const pathInput = document.getElementById('source-host-path-input');
+  if (!pathInput) return;
+  const currentVal = pathInput.value.trim();
+  if (currentVal && drive !== 'custom') {
+    if (/^[A-Za-z]:[\\\/]/.test(currentVal)) {
+      pathInput.value = currentVal.replace(/^[A-Za-z]:/, drive);
+    } else {
+      pathInput.value = `${drive}\\${currentVal.replace(/^[\\\/]+/, '')}`;
+    }
+  } else if (!currentVal && drive !== 'custom') {
+    pathInput.placeholder = `e.g. ${drive}\\autobackup`;
+  }
+  updateSourceModalButtonState();
+}
 
 function openAddSourceModal() {
   const modal = document.getElementById('modal-add-source');
@@ -2159,17 +2199,41 @@ function openAddSourceModal() {
   const nameInput = document.getElementById('source-name-input');
   const pathInput = document.getElementById('source-host-path-input');
   const preview = document.getElementById('source-container-path-preview');
+  const driveSelect = document.getElementById('source-drive-select');
+  const subfolderGroup = document.getElementById('group-subfolder-selector');
+  const filterGroup = document.getElementById('group-filter-subfolders');
+  const cloudNotice = document.getElementById('cloud-source-notice');
 
   if (nameInput) nameInput.value = '';
   if (pathInput) pathInput.value = '';
   if (preview) preview.textContent = '(Enter path above or select subfolders below)';
 
+  const lastDrive = localStorage.getItem('last_used_source_drive') || 'F:';
+  if (driveSelect) {
+    driveSelect.value = lastDrive;
+    driveSelect.onchange = handleSourceDriveChange;
+  }
+
+  // Check if running on cloud deployment (Railway) vs local docker/host
+  const isOnline = isOnlineCloudBuild();
+  if (isOnline) {
+    // Online build: hide device tree selector and show cloud notice
+    if (subfolderGroup) subfolderGroup.style.display = 'none';
+    if (filterGroup) filterGroup.style.display = 'none';
+    if (cloudNotice) cloudNotice.classList.remove('hidden');
+  } else {
+    // Local build: enable local device tree selector
+    if (subfolderGroup) subfolderGroup.style.display = '';
+    if (filterGroup) filterGroup.style.display = '';
+    if (cloudNotice) cloudNotice.classList.add('hidden');
+    loadAvailableRoots();
+    loadFolderBrowserDir('default');
+  }
+
   folderBrowserState.currentPath = 'default';
   folderBrowserState.history = [];
   folderBrowserState.selectedPaths = new Set();
   updateSourceModalButtonState();
-  loadAvailableRoots();
-  loadFolderBrowserDir('default');
 
   // Set up OS File Explorer Picker listener
   const osPickerInput = document.getElementById('input-os-folder-picker');
@@ -2181,9 +2245,16 @@ function openAddSourceModal() {
         const relPath = firstFile.webkitRelativePath || '';
         const rootFolder = relPath.split('/')[0] || 'Selected Folder';
 
-        if (nameInput && !nameInput.value) nameInput.value = rootFolder;
-        if (pathInput && !pathInput.value) {
-          pathInput.value = `C:\\Users\\Dr\\Documents\\${rootFolder}`;
+        const curDrive = driveSelect ? driveSelect.value : 'F:';
+        const drivePrefix = curDrive !== 'custom' ? curDrive : 'F:';
+
+        if (nameInput) nameInput.value = rootFolder;
+        if (pathInput) {
+          if (drivePrefix.toUpperCase() === 'C:') {
+            pathInput.value = `C:\\Users\\Dr\\Documents\\${rootFolder}`;
+          } else {
+            pathInput.value = `${drivePrefix}\\${rootFolder}`;
+          }
           updateSourceModalButtonState();
         }
       }
@@ -2213,7 +2284,7 @@ async function saveSourceFolder() {
   }
 
   if (sourcesToAdd.length === 0) {
-    alert('Please select at least one folder from the browser or enter a Windows path.');
+    alert('Please select at least one folder from the browser or enter a device path (e.g. F:\\autobackup).');
     return;
   }
 
@@ -2243,6 +2314,110 @@ async function saveSourceFolder() {
     if (saveBtn) {
       saveBtn.disabled = false;
       saveBtn.textContent = 'Add Source Folder';
+    }
+  }
+}
+
+function openEditSourceModal(id, name, hostPath) {
+  const modal = document.getElementById('modal-edit-source');
+  if (!modal) return;
+  modal.classList.add('active');
+
+  const idInput = document.getElementById('edit-source-id');
+  const nameInput = document.getElementById('edit-source-name');
+  const pathInput = document.getElementById('edit-source-path');
+  const driveSelect = document.getElementById('edit-source-drive-select');
+  const preview = document.getElementById('edit-source-container-preview');
+
+  if (idInput) idInput.value = id;
+  if (nameInput) nameInput.value = name || '';
+  if (pathInput) pathInput.value = hostPath || '';
+
+  // Auto-detect drive letter from hostPath
+  const driveMatch = (hostPath || '').match(/^([A-Za-z]):/);
+  if (driveMatch && driveSelect) {
+    const dLetter = driveMatch[1].toUpperCase() + ':';
+    if (['C:', 'D:', 'E:', 'F:'].includes(dLetter)) {
+      driveSelect.value = dLetter;
+    } else {
+      driveSelect.value = 'custom';
+    }
+  }
+
+  const updatePreview = () => {
+    const val = pathInput ? pathInput.value.trim() : '';
+    if (!val) {
+      if (preview) preview.textContent = '';
+      return;
+    }
+    const norm = val.replace(/\\/g, '/');
+    const dm = norm.match(/^([A-Za-z]):\/?(.*)$/);
+    if (dm) {
+      const d = dm[1].toUpperCase();
+      const rest = dm[2].replace(/^\//, '');
+      if (preview) preview.textContent = rest ? `/hostfs/${d}/${rest}` : `/hostfs/${d}`;
+    } else {
+      if (preview) preview.textContent = norm;
+    }
+  };
+
+  if (pathInput) pathInput.oninput = updatePreview;
+  if (driveSelect) {
+    driveSelect.onchange = (e) => {
+      const d = e.target.value;
+      if (d !== 'custom' && pathInput) {
+        const cur = pathInput.value.trim();
+        if (/^[A-Za-z]:[\\\/]/.test(cur)) {
+          pathInput.value = cur.replace(/^[A-Za-z]:/, d);
+        } else {
+          pathInput.value = `${d}\\${cur.replace(/^[\\\/]+/, '')}`;
+        }
+        updatePreview();
+      }
+    };
+  }
+
+  updatePreview();
+}
+
+async function saveEditedSource(e) {
+  if (e) e.preventDefault();
+  const id = document.getElementById('edit-source-id')?.value;
+  const name = document.getElementById('edit-source-name')?.value.trim();
+  const hostPath = document.getElementById('edit-source-path')?.value.trim();
+  const btnSave = document.getElementById('btn-save-edited-source');
+
+  if (!id || !hostPath) {
+    alert('Host path is required.');
+    return;
+  }
+
+  if (btnSave) {
+    btnSave.disabled = true;
+    btnSave.textContent = 'Saving...';
+  }
+
+  try {
+    const res = await fetch(`/api/sources/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, host_path: hostPath })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      alert('Error updating source: ' + (data.error || 'Unknown error'));
+      return;
+    }
+
+    document.getElementById('modal-edit-source')?.classList.remove('active');
+    await fetchSources();
+    appendConsoleLine(`[System] ✅ Updated source "${name || hostPath}" successfully!`, 'system');
+  } catch (err) {
+    alert('Failed to update source: ' + err.message);
+  } finally {
+    if (btnSave) {
+      btnSave.disabled = false;
+      btnSave.textContent = 'Save Changes';
     }
   }
 }
@@ -2885,7 +3060,7 @@ function switchSettingsModalTab(tabName) {
   }
 }
 
-let appVersionData = { version: '2.8.0', latestVersion: '2.8.0', isLatest: true };
+let appVersionData = { version: '2.8.1', latestVersion: '2.8.1', isLatest: true };
 
 async function fetchAppVersion() {
   try {
@@ -2897,13 +3072,13 @@ async function fetchAppVersion() {
     // Update header version pill
     const headerBadge = document.getElementById('header-version-badge');
     if (headerBadge) {
-      headerBadge.textContent = `v${data.version || '2.8.0'}`;
+      headerBadge.textContent = `v${data.version || '2.8.1'}`;
     }
 
     // Update settings modal version display
     const settingsVersionBadge = document.getElementById('settings-current-version');
     if (settingsVersionBadge) {
-      settingsVersionBadge.textContent = `v${data.version || '2.8.0'}`;
+      settingsVersionBadge.textContent = `v${data.version || '2.8.1'}`;
     }
     const settingsNodeUptime = document.getElementById('settings-version-uptime');
     if (settingsNodeUptime && data.uptime !== undefined) {

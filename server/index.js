@@ -181,7 +181,8 @@ app.get('/api/status', async (req, res) => {
       totalLogEntries: logsCount.count,
       nextScheduledRun: nextRunTask ? nextRunTask.next_run : null,
       nextScheduledCron: nextRunTask ? nextRunTask.cron_schedule : null,
-      configPath: rclone.RCLONE_CONFIG_PATH
+      configPath: rclone.RCLONE_CONFIG_PATH,
+      isLocalContainer: fs.existsSync('/hostfs')
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -306,6 +307,33 @@ app.delete('/api/sources/:id', async (req, res) => {
   try {
     await db.run('DELETE FROM sources WHERE id = ?', [req.params.id]);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Update an existing user-defined source (name and host_path)
+ */
+app.put('/api/sources/:id', async (req, res) => {
+  try {
+    const { name, host_path } = req.body;
+    if (!host_path) {
+      return res.status(400).json({ error: 'host_path is required' });
+    }
+    const rawPath = String(host_path).trim();
+    const itemName = (name && name.trim()) || path.basename(rawPath.replace(/\\/g, '/')) || 'Source Folder';
+    const container_path = hostPathToContainerPath(rawPath);
+
+    await db.run(
+      'UPDATE sources SET name = ?, host_path = ?, container_path = ? WHERE id = ?',
+      [itemName, rawPath, container_path, req.params.id]
+    );
+
+    res.json({
+      success: true,
+      source: { id: req.params.id, name: itemName, host_path: rawPath, container_path }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

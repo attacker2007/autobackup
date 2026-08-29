@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=2.8.0">
+  <link rel="stylesheet" href="styles.css?v=2.8.1">
 </head>
 <body>
 
@@ -882,7 +882,7 @@
             ⚡ Quick Option: System File Explorer
           </div>
           <div style="font-size: 0.76rem; color: var(--text-muted);">
-            Click to select any folder from your Windows / Host filesystem
+            Pick a folder from your Windows device to auto-fill the folder name
           </div>
         </div>
         <input type="file" id="input-os-folder-picker" webkitdirectory directory multiple style="display: none;">
@@ -891,42 +891,62 @@
         </button>
       </div>
 
+      <!-- Online Cloud Notice (Automatically shown on Railway/Cloud builds) -->
+      <div id="cloud-source-notice" class="hidden" style="margin-bottom: 1rem; padding: 0.75rem 1rem; background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 8px;">
+        <div style="font-weight: 700; font-size: 0.84rem; color: #60a5fa; margin-bottom: 0.2rem; display: flex; align-items: center; gap: 0.4rem;">
+          <span>☁️</span> Online Cloud Deployment (Railway)
+        </div>
+        <div style="font-size: 0.74rem; color: var(--text-muted); line-height: 1.45;">
+          Device disk browsing is disabled on online cloud instances because your laptop drives are not mounted to Railway's cloud server. Simply select your disk below (e.g. <strong>F:</strong> or <strong>C:</strong>) and enter your folder name to schedule backups or configure sync rules.
+        </div>
+      </div>
+
       <div class="grid-2col">
         <div class="form-group">
           <label>Friendly Name (Optional)</label>
-          <input type="text" id="source-name-input" placeholder="e.g. My New Project, Holiday Photos">
+          <input type="text" id="source-name-input" placeholder="e.g. autobackup, Pictures, Important">
         </div>
-        <div class="form-group">
+        <div class="form-group" id="group-filter-subfolders">
           <label>Filter Subfolders</label>
           <input type="text" id="folder-browser-search" placeholder="Type to filter folders..." oninput="filterFolderBrowserItems(this.value)">
         </div>
       </div>
 
       <div class="form-group">
-        <label>Windows / Host Path(s) or Container Path <span style="color:var(--text-dim); font-weight:400;">(e.g. C:\Users\Dr\Documents, F:\Code, or /backup_sources)</span></label>
-        <input type="text" id="source-host-path-input" placeholder="C:\Users\Dr\Documents\NewProject or /backup_sources">
+        <label>Device Disk &amp; Folder Path</label>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <select id="source-drive-select" style="width: 125px; background: #0f172a; border: 1px solid rgba(255,255,255,0.15); color: #38bdf8; border-radius: 6px; padding: 0.52rem 0.5rem; font-weight: 600; font-family: var(--font-mono); font-size: 0.82rem; cursor: pointer;">
+            <option value="F:">💾 F: Disk</option>
+            <option value="C:">💾 C: Disk</option>
+            <option value="D:">💾 D: Disk</option>
+            <option value="E:">💾 E: Disk</option>
+            <option value="custom">Custom / Other</option>
+          </select>
+          <input type="text" id="source-host-path-input" placeholder="e.g. F:\autobackup or C:\Users\Dr\Documents\Pictures" style="flex: 1;">
+        </div>
         
         <!-- Live Container Mapping Progress Card -->
         <div id="source-mapping-card" style="margin-top: 0.45rem; padding: 0.6rem 0.8rem; background: rgba(0,0,0,0.35); border: 1px solid rgba(0, 242, 254, 0.2); border-radius: 8px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
             <span style="font-size: 0.74rem; font-weight: 700; color: #94a3b8; display: flex; align-items: center; gap: 0.35rem;">
-              <span>🔗</span> Container Mapping Progress &amp; Route:
+              <span>🔗</span> Container Mapping Route:
             </span>
             <span id="source-mapping-status-pill" style="font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.45rem; border-radius: 4px; background: rgba(0, 242, 254, 0.15); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 254, 0.3);">
-              Ready to Map
+              Ready
             </span>
           </div>
           <div id="source-container-path-preview" style="font-family: var(--font-mono); font-size: 0.78rem; color: #38bdf8; word-break: break-all; margin-bottom: 0.2rem;">
             (Enter path above or select subfolders below)
           </div>
           <div id="source-mapping-explanation" style="font-size: 0.71rem; color: var(--text-dim); line-height: 1.35;">
-            Local Windows paths (e.g. <code>C:\...</code>) translate to Docker volume mounts (<code>/hostfs/C/...</code>). Direct container paths (e.g. <code>/backup_sources</code>) are preserved.
+            Local Windows paths (e.g. <code>F:\autobackup</code>) map to Docker volume routes (<code>/hostfs/F/autobackup</code>).
           </div>
         </div>
       </div>
 
-      <div class="form-group">
-        <label>Or Navigate &amp; Select Subfolders</label>
+      <!-- Subfolder Selector (Only for local builds where hostfs drives are mounted) -->
+      <div class="form-group" id="group-subfolder-selector">
+        <label>Or Navigate &amp; Select Subfolders (Local Environment)</label>
         <div class="tree-widget">
           <!-- Dynamic quick jump drive & root bar -->
           <div style="display: flex; gap: 0.35rem; padding: 0.4rem 0.6rem; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.08); align-items: center; flex-wrap: wrap;">
@@ -962,6 +982,41 @@
           Add Source Folder
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Source Folder -->
+  <div class="modal-overlay" id="modal-edit-source">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Edit Source Folder</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <form id="form-edit-source" onsubmit="saveEditedSource(event)">
+        <input type="hidden" id="edit-source-id">
+        <div class="form-group">
+          <label>Friendly Name</label>
+          <input type="text" id="edit-source-name" required placeholder="e.g. autobackup">
+        </div>
+        <div class="form-group">
+          <label>Device Disk &amp; Folder Path</label>
+          <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.35rem;">
+            <select id="edit-source-drive-select" style="width: 125px; background: #0f172a; border: 1px solid rgba(255,255,255,0.15); color: #38bdf8; border-radius: 6px; padding: 0.52rem 0.5rem; font-weight: 600; font-family: var(--font-mono); font-size: 0.82rem; cursor: pointer;">
+              <option value="F:">💾 F: Disk</option>
+              <option value="C:">💾 C: Disk</option>
+              <option value="D:">💾 D: Disk</option>
+              <option value="E:">💾 E: Disk</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input type="text" id="edit-source-path" required placeholder="e.g. F:\autobackup or C:\Users\Dr\Documents\..." style="flex: 1;">
+          </div>
+          <span class="form-help">Container volume mapping: <code id="edit-source-container-preview" style="color: var(--accent-cyan);">/hostfs/...</code></span>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-edited-source">Save Changes</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -1039,6 +1094,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=2.8.0"></script>
+  <script src="app.js?v=2.8.1"></script>
 </body>
 </html>
