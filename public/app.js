@@ -2202,6 +2202,77 @@ function handleSourceDriveChange(e) {
   updateSourceModalButtonState();
 }
 
+async function handleNativeOrBrowserPicker() {
+  if (window.desktopApi && typeof window.desktopApi.selectFolder === 'function') {
+    try {
+      const selected = await window.desktopApi.selectFolder();
+      if (selected) {
+        const pathInput = document.getElementById('source-host-path-input');
+        const nameInput = document.getElementById('source-name-input');
+        const driveSelect = document.getElementById('source-drive-select');
+        if (pathInput) pathInput.value = selected;
+        if (nameInput && !nameInput.value.trim()) {
+          nameInput.value = selected.split(/[\\\/]/).filter(Boolean).pop() || 'Folder';
+        }
+        const driveMatch = selected.match(/^([A-Za-z]):/);
+        if (driveMatch && driveSelect) {
+          const letter = driveMatch[1].toUpperCase() + ':';
+          if (['C:', 'F:', 'D:', 'E:'].includes(letter)) {
+            driveSelect.value = letter;
+          } else {
+            driveSelect.value = 'custom';
+          }
+        }
+        updateSourceModalButtonState();
+        return;
+      }
+    } catch (e) {
+      console.error('Error invoking native folder dialog:', e);
+    }
+  }
+
+  const input = document.getElementById('input-os-folder-picker');
+  if (input) input.click();
+}
+
+async function handleEditNativePicker() {
+  if (window.desktopApi && typeof window.desktopApi.selectFolder === 'function') {
+    try {
+      const selected = await window.desktopApi.selectFolder();
+      if (selected) {
+        const pathInput = document.getElementById('edit-source-path');
+        const driveSelect = document.getElementById('edit-source-drive-select');
+        if (pathInput) {
+          pathInput.value = selected;
+          pathInput.dispatchEvent(new Event('input'));
+        }
+        const driveMatch = selected.match(/^([A-Za-z]):/);
+        if (driveMatch && driveSelect) {
+          const letter = driveMatch[1].toUpperCase() + ':';
+          if (['C:', 'F:', 'D:', 'E:'].includes(letter)) {
+            driveSelect.value = letter;
+          } else {
+            driveSelect.value = 'custom';
+          }
+        }
+        return;
+      }
+    } catch (e) {
+      console.error('Error invoking native edit folder dialog:', e);
+    }
+  }
+
+  const current = document.getElementById('edit-source-path')?.value || '';
+  const chosen = prompt('Enter folder path:', current);
+  if (chosen) {
+    const pathInput = document.getElementById('edit-source-path');
+    if (pathInput) {
+      pathInput.value = chosen;
+      pathInput.dispatchEvent(new Event('input'));
+    }
+  }
+}
+
 function openAddSourceModal() {
   const modal = document.getElementById('modal-add-source');
   if (!modal) return;

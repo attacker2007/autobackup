@@ -13,18 +13,71 @@ if (!fs.existsSync(RCLONE_CONFIG_PATH)) {
   fs.writeFileSync(RCLONE_CONFIG_PATH, '', 'utf8');
 }
 
-// Mirror config file to default /root/.config/rclone/rclone.conf if running in Linux/Docker
-try {
-  const rootRcloneDir = '/root/.config/rclone';
-  if (!fs.existsSync(rootRcloneDir)) {
-    fs.mkdirSync(rootRcloneDir, { recursive: true });
+/**
+ * Detect the appropriate rclone executable binary.
+ * Supports packaged Electron app (extraResources), local development (bin/), or system PATH.
+ */
+function getRcloneBinaryPath() {
+  if (process.env.RCLONE_PATH && fs.existsSync(process.env.RCLONE_PATH)) {
+    return process.env.RCLONE_PATH;
   }
-  const rootConfPath = path.join(rootRcloneDir, 'rclone.conf');
-  if (rootConfPath !== RCLONE_CONFIG_PATH && fs.existsSync(RCLONE_CONFIG_PATH)) {
-    fs.writeFileSync(rootConfPath, fs.readFileSync(RCLONE_CONFIG_PATH));
+
+  if (process.resourcesPath) {
+    const resPath = path.join(process.resourcesPath, 'bin', process.platform === 'win32' ? 'rclone.exe' : 'rclone');
+    if (fs.existsSync(resPath)) return resPath;
+    const directResPath = path.join(process.resourcesPath, process.platform === 'win32' ? 'rclone.exe' : 'rclone');
+    if (fs.existsSync(directResPath)) return directResPath;
   }
-} catch (e) {
-  // Non-fatal if running outside container
+
+  const localBin = path.join(__dirname, '../bin', process.platform === 'win32' ? 'rclone.exe' : 'rclone');
+  if (fs.existsSync(localBin)) {
+    return localBin;
+  }
+
+  return process.platform === 'win32' ? 'rclone.exe' : 'rclone';
+}
+
+/**
+ * Resolves a source path, seamlessly mapping legacy container paths (/hostfs/F/..., /Documents/Important)
+ * to native Windows drive paths if running natively on Windows.
+ */
+function resolveSourcePath(rawPath) {
+  if (!rawPath) return rawPath;
+  let normalized = rawPath.replace(/\\/g, '/');
+
+  if (fs.existsSync(normalized) || fs.existsSync(rawPath)) {
+    return rawPath;
+  }
+
+  const hostfsMatch = normalized.match(/^\/hostfs\/([A-Za-z])(?:\/(.*))?$/);
+  if (hostfsMatch) {
+    const drive = hostfsMatch[1].toUpperCase();
+    const rest = hostfsMatch[2] || '';
+    const winPath = rest ? `${drive}:/${rest}` : `${drive}:/`;
+    if (fs.existsSync(winPath)) return winPath;
+    return winPath;
+  }
+
+  if (process.platform === 'win32' && process.env.USERPROFILE) {
+    const userProfile = process.env.USERPROFILE.replace(/\\/g, '/');
+    const directMappings = {
+      '/Documents/Important': `${userProfile}/Documents/Important`,
+      '/Documents/Others': `${userProfile}/OneDrive/Documents`,
+      '/Pictures': `${userProfile}/OneDrive/Pictures`,
+      '/Work/MST': `${userProfile}/Downloads/product-catalog-node_5_1`,
+      '/Code/espsniffer': `${userProfile}/Downloads/esp32_sniffer`,
+      '/Games/Pokemon/SolarEclipse': `${userProfile}/Downloads/Solar Eclipse (v1.9.0)`,
+      '/Work/QuranMerge': `${userProfile}/Downloads/Quran_MergeWords`,
+      '/Code/autobackup': 'F:/autobackup',
+      '/Code/wlancomm': 'F:/interwlancommunicator'
+    };
+
+    if (directMappings[normalized] && fs.existsSync(directMappings[normalized])) {
+      return directMappings[normalized];
+    }
+  }
+
+  return rawPath;
 }
 
 /**
@@ -32,8 +85,10 @@ try {
  */
 function execRclone(args = []) {
   return new Promise((resolve) => {
+    const rcloneBin = getRcloneBinaryPath();
+    const quotedBin = rcloneBin.includes(' ') ? `"${rcloneBin}"` : rcloneBin;
     const cmdArgs = ['--config', RCLONE_CONFIG_PATH, ...args];
-    const cmd = `rclone ${cmdArgs.map(a => `"${a}"`).join(' ')}`;
+    const cmd = `${quotedBin} ${cmdArgs.map(a => `"${a}"`).join(' ')}`;
 
     exec(cmd, { 
       maxBuffer: 10 * 1024 * 1024,
@@ -225,16 +280,8 @@ function sanitizeAndWriteRcloneConfig(rawContent) {
     return line;
   });
 
-  const finalContent = sanitizedLines.join('\n').trim() + '\n';
+  // Write config file
   fs.writeFileSync(RCLONE_CONFIG_PATH, finalContent, 'utf8');
-
-  try {
-    const rootConfDir = '/root/.config/rclone';
-    if (!fs.existsSync(rootConfDir)) {
-      fs.mkdirSync(rootConfDir, { recursive: true });
-    }
-    fs.writeFileSync(path.join(rootConfDir, 'rclone.conf'), finalContent, 'utf8');
-  } catch (e) {}
 }
 
 function sanitizeRcloneConfigFile() {
@@ -453,7 +500,8 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
       return null;
     }
 
-    const child = spawn('rclone', args, {
+    const rcloneBin = getRcloneBinaryPath();
+    const child = spawn(rcloneBin, args, {
       shell: true,
       env: { ...process.env, RCLONE_CONFIG: RCLONE_CONFIG_PATH }
     });
@@ -568,17 +616,18 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   const failedSources = [];
 
   for (let i = 0; i < sources.length; i++) {
-    const srcPath = sources[i];
+    const rawSrcPath = sources[i];
+    const srcPath = resolveSourcePath(rawSrcPath);
     
-    // Compute target destination for this specific container folder
+    // Compute target destination for this specific folder
     let destination;
     if (sources.length === 1) {
       destination = target_path ? `${target_remote}:${target_path}` : `${target_remote}:`;
     } else {
-      const relContainerFolder = srcPath.replace(/^(\/|root\/)+/, '').replace(/\/$/, '');
+      const folderName = path.basename(srcPath.replace(/[\\\/]+$/, '')) || `folder_${i + 1}`;
       const fullSubPath = target_path 
-        ? `${target_path.replace(/\/$/, '')}/${relContainerFolder}`
-        : relContainerFolder;
+        ? `${target_path.replace(/[\\\/]+$/, '')}/${folderName}`
+        : folderName;
       destination = `${target_remote}:${fullSubPath}`;
     }
 
@@ -805,7 +854,8 @@ function transferCloudToCloud(srcRemote, srcPaths, dstRemote, dstPath, mode = 'c
       ];
 
       const res = await new Promise((resChild) => {
-        const child = spawn('rclone', args, {
+        const rcloneBin = getRcloneBinaryPath();
+        const child = spawn(rcloneBin, args, {
           shell: true,
           env: { ...process.env, RCLONE_CONFIG: RCLONE_CONFIG_PATH }
         });
@@ -881,7 +931,8 @@ async function downloadRemoteFiles(remoteName, remotePaths, onLog, taskId = null
         'copy', src, destTarget,
         '-v', '--transfers', '4'
       ];
-      const child = spawn('rclone', args, {
+      const rcloneBin = getRcloneBinaryPath();
+      const child = spawn(rcloneBin, args, {
         shell: true,
         env: { ...process.env, RCLONE_CONFIG: RCLONE_CONFIG_PATH }
       });

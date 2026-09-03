@@ -38,3 +38,9 @@ desktop.ini
 # Logs
 logs/
 *.log
+
+# Build & Binaries
+dist/
+bin/*.exe
+bin/*.zip
+

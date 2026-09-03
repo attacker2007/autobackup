@@ -910,19 +910,9 @@
           </div>
         </div>
         <input type="file" id="input-os-folder-picker" webkitdirectory directory multiple style="display: none;">
-        <button type="button" class="btn btn-sm btn-primary" id="btn-pick-os-folder" onclick="document.getElementById('input-os-folder-picker').click()">
-          📂 Open OS File Explorer...
+        <button type="button" class="btn btn-sm btn-primary" id="btn-pick-os-folder" onclick="handleNativeOrBrowserPicker()" style="display: flex; align-items: center; gap: 0.35rem;">
+          <span>📂</span> Browse Windows Folder...
         </button>
-      </div>
-
-      <!-- Online Cloud Notice (Automatically shown on Railway/Cloud builds) -->
-      <div id="cloud-source-notice" class="hidden" style="margin-bottom: 1rem; padding: 0.75rem 1rem; background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 8px;">
-        <div style="font-weight: 700; font-size: 0.84rem; color: #60a5fa; margin-bottom: 0.2rem; display: flex; align-items: center; gap: 0.4rem;">
-          <span>☁️</span> Online Cloud Deployment (Railway)
-        </div>
-        <div style="font-size: 0.74rem; color: var(--text-muted); line-height: 1.45;">
-          Device disk browsing is disabled on online cloud instances because your laptop drives are not mounted to Railway's cloud server. Simply select your disk below (e.g. <strong>F:</strong> or <strong>C:</strong>) and enter your folder name to schedule backups or configure sync rules.
-        </div>
       </div>
 
       <div class="grid-2col">
@@ -1032,9 +1022,12 @@
               <option value="E:">💾 E: Disk</option>
               <option value="custom">Custom</option>
             </select>
-            <input type="text" id="edit-source-path" required placeholder="e.g. F:\autobackup or C:\Users\Dr\Documents\..." style="flex: 1;">
+            <input type="text" id="edit-source-path" required placeholder="e.g. C:\Users\Dr\Documents\..." style="flex: 1;">
+            <button type="button" class="btn btn-sm btn-secondary" id="btn-edit-browse" onclick="handleEditNativePicker()" style="white-space: nowrap; display: flex; align-items: center; gap: 0.3rem;">
+              <span>📂</span> Browse...
+            </button>
           </div>
-          <span class="form-help">Container volume mapping: <code id="edit-source-container-preview" style="color: var(--accent-cyan);">/hostfs/...</code></span>
+          <span class="form-help">Local path: <code id="edit-source-container-preview" style="color: var(--accent-cyan);">C:\...</code></span>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary modal-close">Cancel</button>

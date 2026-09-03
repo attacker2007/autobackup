@@ -2,7 +2,8 @@
   "name": "@attacker2007/autobackup",
   "version": "2.8.3",
   "description": "Multi-cloud automated backup & sync container service with Rclone engine and Web UI dashboard",
-  "main": "server/index.js",
+  "author": "Abdulrahman Akram <abdulrahman.akram07@gmail.com>",
+  "main": "electron/main.js",
   "bin": {
     "autobackup": "server/index.js"
   },
@@ -15,7 +16,12 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "electron": "electron .",
+    "download-rclone": "node scripts/download-rclone.js",
+    "generate-icon": "python scripts/generate-icon.py",
+    "pack": "electron-builder --dir",
+    "dist": "node scripts/download-rclone.js && electron-builder --win"
   },
   "license": "MIT",
   "keywords": [
@@ -38,5 +44,50 @@
     "sqlite3": "^5.1.7",
     "uuid": "^9.0.1",
     "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "electron": "^44.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.autobackup.hub",
+    "productName": "AutoBackup Hub",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AutoBackup Hub"
+    },
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": ["**/*"]
+      }
+    ],
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "public/**/*",
+      "package.json"
+    ]
   }
 }
