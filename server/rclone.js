@@ -1015,5 +1015,6 @@ module.exports = {
   transferCloudToCloud,
   downloadRemoteFiles,
   humanizeRcloneError,
-  RCLONE_CONFIG_PATH
+  RCLONE_CONFIG_PATH,
+  CONFIG_DIR
 };

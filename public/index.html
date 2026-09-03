@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=2.8.1">
+  <link rel="stylesheet" href="styles.css?v=2.8.2">
 </head>
 <body>
 
@@ -613,6 +613,27 @@
               </div>
             </div>
 
+            <!-- Configuration Persistence & Seed Storage Card -->
+            <div class="migration-card" style="border-color: rgba(52, 211, 153, 0.35); background: rgba(6, 78, 59, 0.15);">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.4rem;">
+                <div>
+                  <h4 style="color: #34d399; display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; margin-bottom: 0.2rem;">
+                    <span>🛡️</span> Live Configuration Persistence
+                  </h4>
+                  <p style="font-size: 0.76rem; color: var(--text-muted); margin: 0;">
+                    Saves current remotes, tasks, sources, and settings as the live container's default seed so restarts and redeployments never wipe your configuration.
+                  </p>
+                </div>
+                <span class="badge badge-success" id="persistence-status-badge" style="font-size: 0.72rem; padding: 0.2rem 0.5rem;">Protected</span>
+              </div>
+              <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.6rem; flex-wrap: wrap;">
+                <button type="button" class="btn btn-sm btn-primary" id="btn-save-as-seed" onclick="saveCurrentConfigAsLiveSeed()" style="background: #059669; border-color: #10b981;">
+                  💾 Store Current Configuration as Live Default
+                </button>
+                <span id="save-seed-feedback" style="font-size: 0.75rem; color: #a7f3d0;"></span>
+              </div>
+            </div>
+
           </div>
         </div>
 
@@ -631,7 +652,7 @@
                     Automated multi-cloud sync &amp; backup container service
                   </p>
                 </div>
-                <span class="version-pill" id="settings-current-version" style="font-size: 0.82rem; padding: 0.2rem 0.6rem;">v2.8.0</span>
+                <span class="version-pill" id="settings-current-version" style="font-size: 0.82rem; padding: 0.2rem 0.6rem;">v2.8.1</span>
               </div>
 
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.75rem;">
@@ -673,6 +694,9 @@
               <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.4rem;">
                 When deploying on Railway, Docker containers automatically pull the latest image tagged with <code>latest</code> or rebuild from the <code>main</code> branch upon GitHub release publication.
               </p>
+              <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; padding: 0.5rem 0.7rem; border-radius: 4px; font-size: 0.73rem; color: #bae6fd; margin-bottom: 0.4rem;">
+                💡 <strong>Persistent Storage:</strong> AutoBackup Hub includes built-in auto-seeding across container restarts. For hardware-level permanent storage on Railway, you can also attach a <strong>Railway Volume</strong> with Mount Path <code>/config</code>.
+              </div>
               <div style="background: rgba(0,0,0,0.35); padding: 0.4rem 0.6rem; border-radius: 4px; font-family: var(--font-mono); font-size: 0.72rem; color: #a7f3d0;">
                 docker pull ghcr.io/attacker2007/autobackup:latest
               </div>
@@ -1094,6 +1118,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=2.8.1"></script>
+  <script src="app.js?v=2.8.2"></script>
 </body>
 </html>

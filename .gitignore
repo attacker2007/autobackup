@@ -12,6 +12,9 @@ config/*.db-shm
 config/autobackup.db
 config/rclone.conf
 config/downloads/
+config/*.json
+server/default_config.json
+server/*.seed.json
 
 # Environment variables
 .env

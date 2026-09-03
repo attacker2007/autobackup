@@ -11,6 +11,7 @@ const db = require('./db');
 const rclone = require('./rclone');
 const scheduler = require('./scheduler');
 
+const CONFIG_DIR = process.env.CONFIG_DIR || (rclone && rclone.CONFIG_DIR) || path.join(__dirname, '../config');
 const compression = require('compression');
 
 const app = express();
@@ -102,11 +103,229 @@ scheduler.setWebSocketBroadcast((messageStr) => {
   }
 });
 
-// Sanitize tokens (strip bad expiry dates) on server startup
-rclone.sanitizeRcloneConfigFile();
+/**
+ * Configuration Persistence Engine:
+ * Restores a full bundle (tasks, sources, settings, rcloneConfig) into SQLite & rclone.conf
+ */
+async function restoreConfigBundle(bundle) {
+  if (!bundle || (!bundle.tasks && !bundle.rcloneConfig && !bundle.settings)) {
+    throw new Error('Invalid configuration bundle format.');
+  }
 
-// Initialize scheduler
-scheduler.init();
+  let settingsImported = 0;
+  let tasksImported = 0;
+  let sourcesImported = 0;
+  let remotesImported = 0;
+
+  // 1. Restore Settings
+  if (Array.isArray(bundle.settings)) {
+    for (const s of bundle.settings) {
+      if (s.key && s.value !== undefined) {
+        await db.run(
+          'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+          [s.key, s.value]
+        );
+        settingsImported++;
+      }
+    }
+  }
+
+  // 2. Restore Sources
+  if (Array.isArray(bundle.sources)) {
+    for (const src of bundle.sources) {
+      if (src.id && src.name && src.host_path) {
+        await db.run(
+          'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, host_path=excluded.host_path, container_path=excluded.container_path',
+          [src.id, src.name, src.host_path, src.container_path || src.host_path]
+        );
+        sourcesImported++;
+      }
+    }
+  }
+
+  // 3. Restore Tasks
+  if (Array.isArray(bundle.tasks)) {
+    for (const t of bundle.tasks) {
+      if (t.id && t.name && t.target_remote) {
+        await db.run(
+          `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             name=excluded.name,
+             source_path=excluded.source_path,
+             target_remote=excluded.target_remote,
+             target_path=excluded.target_path,
+             mode=excluded.mode,
+             cron_schedule=excluded.cron_schedule,
+             enabled=excluded.enabled,
+             conflict_mode=excluded.conflict_mode,
+             priority=excluded.priority,
+             bw_limit=excluded.bw_limit`,
+          [
+            t.id, t.name, t.source_path, t.target_remote, t.target_path || '',
+            t.mode || 'copy', t.cron_schedule, t.enabled !== undefined ? t.enabled : 1,
+            t.conflict_mode || 'smart', t.priority || 'normal', t.bw_limit || ''
+          ]
+        );
+        tasksImported++;
+      }
+    }
+  }
+
+  // 4. Restore Rclone Configuration
+  if (bundle.rcloneConfig && typeof bundle.rcloneConfig === 'string' && bundle.rcloneConfig.trim()) {
+    rclone.sanitizeAndWriteRcloneConfig(bundle.rcloneConfig);
+    rclone.invalidateListRemotesCache();
+    const remotesList = await rclone.listRemotes();
+    remotesImported = remotesList.length;
+  }
+
+  return { settingsImported, tasksImported, sourcesImported, remotesImported };
+}
+
+/**
+ * Snapshot current live configuration to disk as persistent seed fallback
+ */
+async function saveCurrentConfigSnapshot() {
+  try {
+    const tasks = await db.all('SELECT * FROM tasks');
+    const rawSources = await db.all('SELECT * FROM sources');
+    const settings = await db.all('SELECT * FROM settings');
+
+    const seenPaths = new Set();
+    const sources = [];
+    for (const s of rawSources) {
+      const key = (s.host_path || '').trim().toLowerCase();
+      if (!seenPaths.has(key)) {
+        seenPaths.add(key);
+        sources.push(s);
+      }
+    }
+
+    let rcloneConfig = '';
+    if (fs.existsSync(rclone.RCLONE_CONFIG_PATH)) {
+      rcloneConfig = fs.readFileSync(rclone.RCLONE_CONFIG_PATH, 'utf8');
+    }
+
+    const deviceSetting = settings.find(s => s.key === 'device_name');
+    const deviceName = deviceSetting ? deviceSetting.value : (os.hostname() || 'Node');
+    const pkg = require('../package.json');
+
+    const bundle = {
+      version: pkg.version || '2.8.2',
+      exportedAt: new Date().toISOString(),
+      sourceDevice: deviceName,
+      tasks: tasks || [],
+      sources: sources || [],
+      settings: settings || [],
+      rcloneConfig: rcloneConfig || ''
+    };
+
+    const bundleJson = JSON.stringify(bundle, null, 2);
+
+    // 1. Save in active CONFIG_DIR
+    const snapshotPath = path.join(CONFIG_DIR, 'autobackup-current-config.json');
+    fs.writeFileSync(snapshotPath, bundleJson, 'utf8');
+
+    // 2. Also update server/default_config.json if writeable
+    const defaultSeedPath = path.join(__dirname, 'default_config.json');
+    try {
+      fs.writeFileSync(defaultSeedPath, bundleJson, 'utf8');
+    } catch (e) {
+      // Ignored if read-only mount
+    }
+
+    return { success: true, path: snapshotPath, bundle };
+  } catch (err) {
+    console.error('[AutoBackup Hub Persistence] Error saving config snapshot:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Auto-Seed Configuration on Startup:
+ * If the database or rclone config has no tasks/remotes, auto-bootstrap from the seed bundle.
+ */
+async function autoSeedConfiguration() {
+  try {
+    const taskCount = await db.get('SELECT COUNT(*) as count FROM tasks');
+    const remotes = await rclone.listRemotes().catch(() => []);
+    const remoteCount = remotes ? remotes.length : 0;
+
+    if ((!taskCount || taskCount.count === 0) && remoteCount === 0) {
+      console.log('[AutoSeed] ⚡ Fresh or uninitialized environment detected (0 tasks, 0 remotes). Checking for persistent seed...');
+      
+      const configSnapshotPath = path.join(CONFIG_DIR, 'autobackup-current-config.json');
+      const seedBundlePath = path.join(__dirname, 'default_config.json');
+
+      let seedToLoad = null;
+      let seedSource = '';
+
+      // 1. Check Railway / Cloud private Environment Variables (100% secure, never committed to GitHub)
+      if (process.env.AUTOBACKUP_CONFIG_BUNDLE) {
+        try {
+          seedToLoad = JSON.parse(process.env.AUTOBACKUP_CONFIG_BUNDLE.trim());
+          seedSource = 'Environment Variable (AUTOBACKUP_CONFIG_BUNDLE)';
+        } catch (e) {
+          console.error('[AutoSeed] Error parsing AUTOBACKUP_CONFIG_BUNDLE:', e.message);
+        }
+      } else if (process.env.AUTOBACKUP_CONFIG_BASE64) {
+        try {
+          const decoded = Buffer.from(process.env.AUTOBACKUP_CONFIG_BASE64.trim(), 'base64').toString('utf8');
+          seedToLoad = JSON.parse(decoded);
+          seedSource = 'Environment Variable (AUTOBACKUP_CONFIG_BASE64)';
+        } catch (e) {
+          console.error('[AutoSeed] Error parsing AUTOBACKUP_CONFIG_BASE64:', e.message);
+        }
+      }
+
+      // 2. Check local/volume runtime snapshot
+      if (!seedToLoad && fs.existsSync(configSnapshotPath)) {
+        try {
+          seedToLoad = JSON.parse(fs.readFileSync(configSnapshotPath, 'utf8'));
+          seedSource = configSnapshotPath;
+        } catch (e) {
+          console.error('[AutoSeed] Error reading runtime snapshot:', e.message);
+        }
+      }
+
+      // 3. Check local seed bundle file (if present)
+      if (!seedToLoad && fs.existsSync(seedBundlePath)) {
+        try {
+          seedToLoad = JSON.parse(fs.readFileSync(seedBundlePath, 'utf8'));
+          seedSource = seedBundlePath;
+        } catch (e) {
+          console.error('[AutoSeed] Error reading default seed bundle:', e.message);
+        }
+      }
+
+      if (seedToLoad) {
+        console.log(`[AutoSeed] 🚀 Restoring configuration from seed: ${seedSource}...`);
+        const stats = await restoreConfigBundle(seedToLoad);
+        console.log(`[AutoSeed] ✅ Seed restored: ${stats.tasksImported} task(s), ${stats.sourcesImported} source(s), ${stats.remotesImported} remote(s), ${stats.settingsImported} setting(s).`);
+      } else {
+        console.log('[AutoSeed] ℹ️ No configuration seed bundle found. Starting with blank configuration.');
+      }
+    } else {
+      console.log(`[AutoSeed] ✅ Configuration detected: ${taskCount ? taskCount.count : 0} tasks, ${remoteCount} remotes. Persistence active.`);
+    }
+  } catch (err) {
+    console.error('[AutoSeed] Initialization error:', err.message);
+  }
+}
+
+// Startup sequence: sanitize tokens -> auto-seed configuration -> initialize scheduler
+async function initAutoBackupHub() {
+  try {
+    rclone.sanitizeRcloneConfigFile();
+    await autoSeedConfiguration();
+    await scheduler.init();
+  } catch (err) {
+    console.error('[AutoBackup Hub] Startup error:', err);
+  }
+}
+
+initAutoBackupHub();
 
 // Pre-warm quota cache in the background so remotes UI is fast on first open
 // Pre-warm quota cache for first remote only — fetching all at once exhausts
@@ -173,6 +392,8 @@ app.get('/api/status', async (req, res) => {
     const logsCount = await db.get('SELECT COUNT(*) as count FROM logs');
     const nextRunTask = await db.get('SELECT next_run, cron_schedule FROM tasks WHERE enabled = 1 AND next_run IS NOT NULL ORDER BY next_run ASC LIMIT 1');
 
+    const hasSeed = fs.existsSync(path.join(__dirname, 'default_config.json')) || fs.existsSync(path.join(CONFIG_DIR, 'autobackup-current-config.json'));
+
     res.json({
       rcloneInstalled: isRcloneInstalled,
       activeTasksCount: tasksCount.count,
@@ -182,7 +403,9 @@ app.get('/api/status', async (req, res) => {
       nextScheduledRun: nextRunTask ? nextRunTask.next_run : null,
       nextScheduledCron: nextRunTask ? nextRunTask.cron_schedule : null,
       configPath: rclone.RCLONE_CONFIG_PATH,
-      isLocalContainer: fs.existsSync('/hostfs')
+      isLocalContainer: fs.existsSync('/hostfs'),
+      persistenceMode: hasSeed ? 'seed_protected' : 'standard',
+      hasSeedConfig: hasSeed
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -294,6 +517,7 @@ app.post('/api/sources', async (req, res) => {
       inserted.push({ id, name: itemName, host_path: rawPath, container_path });
     }
 
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true, count: inserted.length, sources: inserted });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -306,6 +530,7 @@ app.post('/api/sources', async (req, res) => {
 app.delete('/api/sources/:id', async (req, res) => {
   try {
     await db.run('DELETE FROM sources WHERE id = ?', [req.params.id]);
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -330,6 +555,7 @@ app.put('/api/sources/:id', async (req, res) => {
       [itemName, rawPath, container_path, req.params.id]
     );
 
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({
       success: true,
       source: { id: req.params.id, name: itemName, host_path: rawPath, container_path }
@@ -546,6 +772,7 @@ app.post('/api/tasks', async (req, res) => {
       scheduler.scheduleTask(newTask);
     }
 
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true, task: newTask });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -595,6 +822,7 @@ app.put('/api/tasks/:id', async (req, res) => {
       scheduler.unscheduleTask(id);
     }
 
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true, task: updatedTask });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -609,6 +837,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
     const { id } = req.params;
     scheduler.unscheduleTask(id);
     await db.run('DELETE FROM tasks WHERE id = ?', [id]);
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true, id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -748,6 +977,7 @@ app.post('/api/settings', async (req, res) => {
       await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['telegram_chat_id', telegram_chat_id.trim()]);
     }
 
+    await saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -908,81 +1138,46 @@ app.post('/api/backup/import', async (req, res) => {
       return res.status(400).json({ error: 'Invalid configuration bundle format.' });
     }
 
-    let settingsImported = 0;
-    let tasksImported = 0;
-    let sourcesImported = 0;
-    let remotesImported = 0;
-
-    // 1. Restore Settings
-    if (Array.isArray(bundle.settings)) {
-      for (const s of bundle.settings) {
-        if (s.key && s.value !== undefined) {
-          await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [s.key, s.value]);
-          settingsImported++;
-        }
-      }
-    }
-
-    // 2. Restore Sources
-    if (Array.isArray(bundle.sources)) {
-      for (const src of bundle.sources) {
-        if (src.id && src.name && src.host_path) {
-          await db.run(
-            'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, host_path=excluded.host_path, container_path=excluded.container_path',
-            [src.id, src.name, src.host_path, src.container_path || src.host_path]
-          );
-          sourcesImported++;
-        }
-      }
-    }
-
-    // 3. Restore Tasks
-    if (Array.isArray(bundle.tasks)) {
-      for (const t of bundle.tasks) {
-        if (t.id && t.name && t.target_remote) {
-          await db.run(
-            `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               name=excluded.name,
-               source_path=excluded.source_path,
-               target_remote=excluded.target_remote,
-               target_path=excluded.target_path,
-               mode=excluded.mode,
-               cron_schedule=excluded.cron_schedule,
-               enabled=excluded.enabled,
-               conflict_mode=excluded.conflict_mode,
-               priority=excluded.priority,
-               bw_limit=excluded.bw_limit`,
-            [
-              t.id, t.name, t.source_path, t.target_remote, t.target_path || '',
-              t.mode || 'copy', t.cron_schedule, t.enabled !== undefined ? t.enabled : 1,
-              t.conflict_mode || 'smart', t.priority || 'normal', t.bw_limit || ''
-            ]
-          );
-          tasksImported++;
-        }
-      }
-    }
-
-    // 4. Restore Rclone Configuration
-    if (bundle.rcloneConfig && typeof bundle.rcloneConfig === 'string' && bundle.rcloneConfig.trim()) {
-      rclone.sanitizeAndWriteRcloneConfig(bundle.rcloneConfig);
-      rclone.invalidateListRemotesCache();
-      const remotesList = await rclone.listRemotes();
-      remotesImported = remotesList.length;
-    }
+    const stats = await restoreConfigBundle(bundle);
 
     // Re-initialize scheduler to immediately activate imported task crons
     await scheduler.init();
 
+    // Auto-persist imported configuration as current snapshot
+    await saveCurrentConfigSnapshot();
+
     res.json({
       success: true,
-      message: `Configuration restored successfully! Restored ${tasksImported} task(s), ${sourcesImported} source(s), ${settingsImported} setting(s), and ${remotesImported} cloud remote(s).`,
-      stats: { settingsImported, tasksImported, sourcesImported, remotesImported }
+      message: `Configuration restored successfully! Restored ${stats.tasksImported} task(s), ${stats.sourcesImported} source(s), ${stats.settingsImported} setting(s), and ${stats.remotesImported} cloud remote(s).`,
+      stats
     });
   } catch (err) {
     res.status(500).json({ error: 'Import failed: ' + err.message });
+  }
+});
+
+/**
+ * Store current configuration as the live default seed
+ * POST /api/backup/save-as-seed
+ */
+app.post('/api/backup/save-as-seed', async (req, res) => {
+  try {
+    const result = await saveCurrentConfigSnapshot();
+    if (result.success) {
+      const remotes = await rclone.listRemotes().catch(() => []);
+      res.json({
+        success: true,
+        message: 'Current configuration stored as live default seed! It will be preserved across restarts.',
+        tasksCount: result.bundle.tasks.length,
+        sourcesCount: result.bundle.sources.length,
+        settingsCount: result.bundle.settings.length,
+        remotesCount: remotes ? remotes.length : 0
+      });
+    } else {
+      res.status(500).json({ error: result.error || 'Failed to save seed.' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1214,6 +1409,7 @@ app.post('/api/remotes', async (req, res) => {
 
     const result = await rclone.addRemoteConfig(name, type, options || {});
     rclone.invalidateListRemotesCache();
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1290,6 +1486,7 @@ app.post('/api/remotes/:name/token', async (req, res) => {
     }
 
     rclone.invalidateListRemotesCache();
+    saveCurrentConfigSnapshot().catch(() => {});
     const testResult = await rclone.testRemoteConnection(remoteName);
     res.json({ success: true, testResult });
   } catch (err) {
@@ -1310,6 +1507,7 @@ app.post('/api/remotes/import-block', async (req, res) => {
 
     const importedRemotes = rclone.importRawConfigBlock(configText);
     rclone.invalidateListRemotesCache();
+    saveCurrentConfigSnapshot().catch(() => {});
 
     const testRes = importedRemotes.length > 0
       ? await rclone.testRemoteConnection(importedRemotes[0])
@@ -1378,6 +1576,7 @@ app.delete('/api/remotes/:name', async (req, res) => {
     const { name } = req.params;
     rclone.deleteRemoteConfig(name);
     rclone.invalidateListRemotesCache();
+    saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true, name });
   } catch (err) {
     res.status(500).json({ error: err.message });

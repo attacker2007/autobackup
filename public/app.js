@@ -178,6 +178,17 @@ async function fetchStatus() {
       badge.style.borderColor = '#f59e0b';
       badge.style.color = '#f59e0b';
     }
+
+    const persistBadge = document.getElementById('persistence-status-badge');
+    if (persistBadge) {
+      if (data.hasSeedConfig) {
+        persistBadge.textContent = 'Seed Protected';
+        persistBadge.className = 'badge badge-success';
+      } else {
+        persistBadge.textContent = 'Standard';
+        persistBadge.className = 'badge badge-secondary';
+      }
+    }
   } catch (err) {
     console.error('Failed to fetch status:', err);
   }
@@ -3060,7 +3071,7 @@ function switchSettingsModalTab(tabName) {
   }
 }
 
-let appVersionData = { version: '2.8.1', latestVersion: '2.8.1', isLatest: true };
+let appVersionData = { version: '2.8.2', latestVersion: '2.8.2', isLatest: true };
 
 async function fetchAppVersion() {
   try {
@@ -3072,13 +3083,13 @@ async function fetchAppVersion() {
     // Update header version pill
     const headerBadge = document.getElementById('header-version-badge');
     if (headerBadge) {
-      headerBadge.textContent = `v${data.version || '2.8.1'}`;
+      headerBadge.textContent = `v${data.version || '2.8.2'}`;
     }
 
     // Update settings modal version display
     const settingsVersionBadge = document.getElementById('settings-current-version');
     if (settingsVersionBadge) {
-      settingsVersionBadge.textContent = `v${data.version || '2.8.1'}`;
+      settingsVersionBadge.textContent = `v${data.version || '2.8.2'}`;
     }
     const settingsNodeUptime = document.getElementById('settings-version-uptime');
     if (settingsNodeUptime && data.uptime !== undefined) {
@@ -3238,6 +3249,48 @@ function setupBackupImportUI() {
         btnExecute.textContent = 'Restore & Apply Now';
       }
     };
+  }
+}
+
+async function saveCurrentConfigAsLiveSeed() {
+  const btn = document.getElementById('btn-save-as-seed');
+  const feedback = document.getElementById('save-seed-feedback');
+  const badge = document.getElementById('persistence-status-badge');
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Saving Seed...';
+  }
+  if (feedback) feedback.textContent = '';
+
+  try {
+    const res = await fetch('/api/backup/save-as-seed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to save seed');
+    }
+
+    if (feedback) {
+      feedback.textContent = `✅ Saved ${data.remotesCount || 0} remotes, ${data.tasksCount || 0} tasks, and ${data.sourcesCount || 0} sources as live default!`;
+    }
+    if (badge) {
+      badge.textContent = 'Seed Protected';
+      badge.className = 'badge badge-success';
+    }
+    appendConsoleLine(`[Persistence] ✅ ${data.message}`, 'system');
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `❌ Error: ${err.message}`;
+    }
+    appendConsoleLine(`[Persistence] ❌ Error saving seed: ${err.message}`, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '💾 Store Current Configuration as Live Default';
+    }
   }
 }
 

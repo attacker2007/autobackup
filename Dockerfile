@@ -26,6 +26,10 @@ RUN mkdir -p /config /backup_sources
 
 ENV PORT=3000
 ENV CONFIG_DIR=/config
+ENV RCLONE_CONFIG=/config/rclone.conf
+
+# Define persistent volume for configuration and database
+VOLUME ["/config"]
 
 EXPOSE 3000
 
