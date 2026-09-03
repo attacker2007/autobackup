@@ -134,10 +134,21 @@ async function restoreConfigBundle(bundle) {
   if (Array.isArray(bundle.sources)) {
     for (const src of bundle.sources) {
       if (src.id && src.name && src.host_path) {
-        await db.run(
-          'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, host_path=excluded.host_path, container_path=excluded.container_path',
-          [src.id, src.name, src.host_path, src.container_path || src.host_path]
+        const existing = await db.get(
+          'SELECT id FROM sources WHERE id = ? OR LOWER(host_path) = LOWER(?) OR LOWER(container_path) = LOWER(?)',
+          [src.id, src.host_path, src.container_path || src.host_path]
         );
+        if (existing) {
+          await db.run(
+            'UPDATE sources SET name = ?, host_path = ?, container_path = ? WHERE id = ?',
+            [src.name, src.host_path, src.container_path || src.host_path, existing.id]
+          );
+        } else {
+          await db.run(
+            'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?)',
+            [src.id, src.name, src.host_path, src.container_path || src.host_path]
+          );
+        }
         sourcesImported++;
       }
     }
@@ -188,6 +199,7 @@ async function restoreConfigBundle(bundle) {
  */
 async function saveCurrentConfigSnapshot() {
   try {
+    await syncComposeSources();
     const tasks = await db.all('SELECT * FROM tasks');
     const rawSources = await db.all('SELECT * FROM sources');
     const settings = await db.all('SELECT * FROM settings');
@@ -318,6 +330,7 @@ async function autoSeedConfiguration() {
 async function initAutoBackupHub() {
   try {
     rclone.sanitizeRcloneConfigFile();
+    await syncComposeSources();
     await autoSeedConfiguration();
     await scheduler.init();
   } catch (err) {
@@ -353,11 +366,63 @@ function parseVolumeLine(line) {
   const hostPath = trimmed.substring(0, lastColonIndex).trim();
   const containerPath = trimmed.substring(lastColonIndex + 1).trim();
 
-  if (!containerPath || containerPath === '/config' || containerPath.includes('./config') || /^\d+$/.test(containerPath)) {
+  if (
+    !containerPath ||
+    containerPath === '/config' ||
+    containerPath.includes('./config') ||
+    containerPath.startsWith('/app') ||
+    hostPath.startsWith('./') ||
+    containerPath.match(/^\/hostfs\/[A-Z]$/) ||
+    /^\d+$/.test(containerPath)
+  ) {
     return null;
   }
 
   return { hostPath, containerPath };
+}
+
+/**
+ * Automatically synchronize volume mounts from docker-compose.yml into SQLite sources table.
+ * Ensures all C: and F: laptop mounts are persisted into configuration snapshots and visible on live/cloud sites.
+ */
+async function syncComposeSources() {
+  try {
+    const composePaths = [
+      path.join(__dirname, '../docker-compose.yml'),
+      '/app/docker-compose.yml',
+      'f:/autobackup/docker-compose.yml'
+    ];
+
+    const existingSources = await db.all('SELECT * FROM sources');
+    const existingContainers = new Set(existingSources.map(s => (s.container_path || '').trim().toLowerCase()));
+    const existingHosts = new Set(existingSources.map(s => (s.host_path || '').trim().toLowerCase()));
+
+    for (const composePath of composePaths) {
+      if (!fs.existsSync(composePath)) continue;
+      const content = fs.readFileSync(composePath, 'utf8');
+      const lines = content.split('\n');
+      for (const line of lines) {
+        const parsed = parseVolumeLine(line);
+        if (!parsed) continue;
+
+        const cNorm = parsed.containerPath.trim().toLowerCase();
+        const hNorm = parsed.hostPath.trim().toLowerCase();
+        if (existingContainers.has(cNorm) || existingHosts.has(hNorm)) continue;
+
+        const id = uuidv4();
+        const name = path.basename(parsed.containerPath) || path.basename(parsed.hostPath) || 'Source';
+        await db.run(
+          'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?)',
+          [id, name, parsed.hostPath, parsed.containerPath]
+        );
+        existingContainers.add(cNorm);
+        existingHosts.add(hNorm);
+      }
+      break;
+    }
+  } catch (err) {
+    console.error('[AutoBackup Hub] Error syncing compose sources to DB:', err.message);
+  }
 }
 
 /**
@@ -478,6 +543,13 @@ app.get('/api/sources', async (req, res) => {
           label: `${src.container_path}  (${src.name}: ${src.host_path})`,
           source: 'user'
         });
+      } else {
+        const item = sourcesMap.get(src.container_path);
+        item.id = src.id;
+        item.name = src.name;
+        if (src.name) {
+          item.label = `${src.container_path}  (${src.name}: ${src.host_path})`;
+        }
       }
     }
 

@@ -2219,7 +2219,7 @@ function openAddSourceModal() {
   if (pathInput) pathInput.value = '';
   if (preview) preview.textContent = '(Enter path above or select subfolders below)';
 
-  const lastDrive = localStorage.getItem('last_used_source_drive') || 'F:';
+  const lastDrive = localStorage.getItem('last_used_source_drive') || 'C:';
   if (driveSelect) {
     driveSelect.value = lastDrive;
     driveSelect.onchange = handleSourceDriveChange;
@@ -2256,8 +2256,8 @@ function openAddSourceModal() {
         const relPath = firstFile.webkitRelativePath || '';
         const rootFolder = relPath.split('/')[0] || 'Selected Folder';
 
-        const curDrive = driveSelect ? driveSelect.value : 'F:';
-        const drivePrefix = curDrive !== 'custom' ? curDrive : 'F:';
+        const curDrive = driveSelect ? driveSelect.value : 'C:';
+        const drivePrefix = curDrive !== 'custom' ? curDrive : 'C:';
 
         if (nameInput) nameInput.value = rootFolder;
         if (pathInput) {
@@ -2295,7 +2295,7 @@ async function saveSourceFolder() {
   }
 
   if (sourcesToAdd.length === 0) {
-    alert('Please select at least one folder from the browser or enter a device path (e.g. F:\\autobackup).');
+    alert('Please select at least one folder from the browser or enter a device path (e.g. C:\\Users\\Dr\\Documents or F:\\autobackup).');
     return;
   }
 

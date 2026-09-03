@@ -1,6 +1,6 @@
 {
   "name": "@attacker2007/autobackup",
-  "version": "2.8.2",
+  "version": "2.8.3",
   "description": "Multi-cloud automated backup & sync container service with Rclone engine and Web UI dashboard",
   "main": "server/index.js",
   "bin": {
