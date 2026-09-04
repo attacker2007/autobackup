@@ -28,15 +28,29 @@ const folderBrowserState = { currentPath: '/hostfs', history: [] };
 // Transfer state
 let transferSelectedPath = { device: null, cloudSrc: null };
 
-document.addEventListener('DOMContentLoaded', () => {
+let appBooted = false;
+function boot() {
+  if (appBooted) return;
+  appBooted = true;
   initApp();
   initWebSocket();
   setupEventListeners();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  // DOM already loaded or interactive - boot immediately
+  boot();
+}
 
 async function initApp() {
-  await checkPinAuthStatus();
-  await Promise.all([
+  try {
+    await checkPinAuthStatus();
+  } catch (e) {
+    console.warn('PIN check failed, continuing initialization:', e);
+  }
+  await Promise.allSettled([
     fetchStatus(),
     fetchTasks(),
     fetchRemotes(),
@@ -128,27 +142,57 @@ function formatNextRun(isoString, cronSchedule) {
 /**
  * Append a formatted log line to the live execution console window
  */
-function appendConsoleLine(text, type = 'normal') {
-  const consoleWin = document.getElementById('console-output');
-  if (!consoleWin) return;
+const consoleQueue = [];
+let consoleRafScheduled = false;
 
+function flushConsoleQueue() {
+  const consoleWin = document.getElementById('console-output');
+  if (!consoleWin || consoleQueue.length === 0) {
+    consoleRafScheduled = false;
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const batch = consoleQueue.splice(0, 100);
+
+  for (const item of batch) {
+    const lineEl = document.createElement('div');
+    lineEl.className = `console-line ${item.type}`;
+    lineEl.textContent = item.lineText;
+    fragment.appendChild(lineEl);
+  }
+
+  consoleWin.appendChild(fragment);
+
+  // Keep max 300 lines in DOM to keep memory and CPU lean
+  while (consoleWin.children.length > 300) {
+    consoleWin.removeChild(consoleWin.firstChild);
+  }
+  consoleWin.scrollTop = consoleWin.scrollHeight;
+
+  if (consoleQueue.length > 0) {
+    requestAnimationFrame(flushConsoleQueue);
+  } else {
+    consoleRafScheduled = false;
+  }
+}
+
+function appendConsoleLine(text, type = 'normal') {
   const textStr = String(text || '');
   const lines = textStr.split('\n');
-  const fragment = document.createDocumentFragment();
 
   lines.forEach((lineText, idx) => {
     if (!lineText && idx === lines.length - 1) return;
-    const lineEl = document.createElement('div');
-    lineEl.className = `console-line ${type}`;
-    lineEl.textContent = lineText;
-    fragment.appendChild(lineEl);
+    consoleQueue.push({ lineText, type });
   });
 
-  consoleWin.appendChild(fragment);
-  consoleWin.scrollTop = consoleWin.scrollHeight;
+  if (consoleQueue.length > 500) {
+    consoleQueue.splice(0, consoleQueue.length - 500);
+  }
 
-  while (consoleWin.children.length > 500) {
-    consoleWin.removeChild(consoleWin.firstChild);
+  if (!consoleRafScheduled) {
+    consoleRafScheduled = true;
+    requestAnimationFrame(flushConsoleQueue);
   }
 }
 
@@ -212,15 +256,23 @@ function renderTasks() {
   const countBadge = document.getElementById('tasks-badge-count');
   const remoteFilter = document.getElementById('tasks-remote-filter')?.value || 'all';
 
+  if (!container) return;
+
   const filteredTasks = remoteFilter === 'all'
     ? currentTasks
     : currentTasks.filter(t => t.target_remote === remoteFilter);
 
-  countBadge.textContent = `${filteredTasks.length} Task(s)`;
+  if (countBadge) {
+    countBadge.textContent = `${filteredTasks.length} Task(s)`;
+  }
 
   if (filteredTasks.length === 0) {
-    container.replaceChildren(emptyState);
-    emptyState.classList.remove('hidden');
+    if (emptyState) {
+      container.replaceChildren(emptyState);
+      emptyState.classList.remove('hidden');
+    } else {
+      container.innerHTML = '<div class="empty-state"><p>No backup tasks configured.</p></div>';
+    }
     return;
   }
 
@@ -231,8 +283,18 @@ function renderTasks() {
     card.className = 'task-card';
     card.dataset.taskId = task.id;
 
-    const statusClass = `status-${task.last_status || 'idle'}`;
-    const statusLabel = task.last_status ? task.last_status.toUpperCase() : 'IDLE';
+    let statusClass = `status-${task.last_status || 'idle'}`;
+    let statusLabel = task.last_status ? task.last_status.toUpperCase() : 'IDLE';
+    if (task.last_status === 'paused') {
+      statusClass = 'status-badge-paused';
+      statusLabel = '⏸️ PAUSED';
+    } else if (task.last_status === 'paused_network') {
+      statusClass = 'status-badge-network-paused';
+      statusLabel = '📶 OFFLINE PAUSED';
+    } else if (task.last_status === 'partial' || task.failed_files_count > 0) {
+      statusClass = 'status-badge-partial';
+      statusLabel = `⚠️ PARTIAL (${task.failed_files_count || 1} SKIPPED)`;
+    }
 
     let scheduleDisplay = task.cron_schedule;
     if (task.cron_schedule === 'last_friday') scheduleDisplay = '🏆 Backup Day (Last Friday)';
@@ -262,6 +324,13 @@ function renderTasks() {
       priorityBadgeHtml = `<span class="badge" style="font-size:0.68rem; padding:0.1rem 0.45rem; border-radius:4px;">${priority.toUpperCase()}</span>`;
     }
 
+    if (task.realtime_watch) {
+      priorityBadgeHtml += ` <span class="badge" style="background:rgba(0,242,254,0.15); color:#00f2fe; border:1px solid rgba(0,242,254,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;" title="Real-time instant sync active">⚡ REALTIME</span>`;
+    }
+    if (task.encrypt_backup) {
+      priorityBadgeHtml += ` <span class="badge" style="background:rgba(139,92,246,0.15); color:#c4b5fd; border:1px solid rgba(139,92,246,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;" title="AES-256 Zero-knowledge client-side encrypted">🔒 ENCRYPTED</span>`;
+    }
+
     const conflictLabel = (task.conflict_mode || 'smart').toUpperCase();
     const sourcePaths = parseSourcePaths(task.source_path);
 
@@ -276,12 +345,35 @@ function renderTasks() {
 
     const nextRunDisplay = formatNextRun(task.next_run, task.cron_schedule);
     const isRunning = task.last_status === 'running';
+    const isPaused = task.last_status === 'paused' || task.last_status === 'paused_network';
 
     let actionButtonsHtml = '';
     if (isRunning) {
       actionButtonsHtml = `
+        <button class="btn btn-sm btn-secondary btn-pause-task" data-id="${task.id}" style="color:#fde047; border-color:rgba(234,179,8,0.4);" title="Pause Running Backup">
+          ⏸ Pause
+        </button>
         <button class="btn btn-sm btn-outline btn-stop-task" data-id="${task.id}" style="color:#fb7185; border-color:rgba(244,63,94,0.4);" title="Stop Running Backup Task">
           ⏹ Stop
+        </button>
+      `;
+    } else if (isPaused) {
+      actionButtonsHtml = `
+        <button class="btn btn-sm btn-primary btn-resume-task" data-id="${task.id}" style="background: linear-gradient(135deg, #10b981, #059669); border-color:#10b981;" title="Resume Backup Task">
+          ▶ Resume
+        </button>
+        <button class="btn btn-sm btn-secondary btn-partial-run-task" data-id="${task.id}" title="Run Selected Folders Only">
+          📂 Run Partial...
+        </button>
+        ${(task.failed_files_count > 0 || task.last_status === 'partial') ? `
+        <button class="btn btn-sm btn-secondary btn-failed-files" data-id="${task.id}" style="color:#fbbf24; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.08);" title="Check and retry failed/skipped files">
+          ⚠️ Failed Files (${task.failed_files_count || 0})
+        </button>` : ''}
+        <button class="btn btn-sm btn-secondary btn-edit-task" data-id="${task.id}" title="Edit Task">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+        </button>
+        <button class="btn btn-sm btn-danger-outline btn-delete-task" data-id="${task.id}" title="Delete Task">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
       `;
     } else {
@@ -290,6 +382,13 @@ function renderTasks() {
           <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
           Run
         </button>
+        <button class="btn btn-sm btn-secondary btn-partial-run-task" data-id="${task.id}" title="Run Selected Folders Only">
+          📂 Run Partial...
+        </button>
+        ${(task.failed_files_count > 0 || task.last_status === 'partial') ? `
+        <button class="btn btn-sm btn-secondary btn-failed-files" data-id="${task.id}" style="color:#fbbf24; border-color:rgba(245,158,11,0.4); background:rgba(245,158,11,0.08);" title="Check and retry failed/skipped files">
+          ⚠️ Failed Files (${task.failed_files_count || 0})
+        </button>` : ''}
         <button class="btn btn-sm btn-outline btn-dry-run" data-id="${task.id}" title="Dry Run Simulation">
           🧪 Dry Run
         </button>
@@ -344,7 +443,8 @@ function renderTasks() {
     container.appendChild(card);
   });
 
-  document.getElementById('stat-next-run').textContent = 'Scheduled Cron Active';
+  const statNext = document.getElementById('stat-next-run');
+  if (statNext) statNext.textContent = 'Scheduled Cron Active';
 }
 
 // ─── Sources ───────────────────────────────────────────────────────────────
@@ -386,7 +486,8 @@ function buildContainerTree(sourcesList) {
   };
 
   sourcesList.forEach(src => {
-    const raw = src.containerPath.replace(/^(\/|root\/)+/, '').replace(/\/$/, '');
+    if (!src || !src.containerPath) return;
+    const raw = String(src.containerPath).replace(/^(\/|root\/)+/, '').replace(/\/$/, '');
     const parts = raw.split('/').filter(Boolean);
 
     let curr = root;
@@ -401,7 +502,8 @@ function buildContainerTree(sourcesList) {
           containerPath: isLeaf ? src.containerPath : null,
           hostPath: isLeaf ? src.hostPath : null,
           sourceId: isLeaf ? src.id : null,
-          sourceType: isLeaf ? src.source : null
+          sourceType: isLeaf ? src.source : null,
+          tags: isLeaf ? src.tags : null
         };
       }
       curr = curr.children[part];
@@ -465,6 +567,17 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
       rowEl.appendChild(hostEl);
     }
 
+    // Source Tag Badges
+    if (node.tags) {
+      const tagsArr = String(node.tags).split(',').map(t => t.trim()).filter(Boolean);
+      tagsArr.forEach(t => {
+        const badge = document.createElement('span');
+        badge.className = 'source-tag-badge';
+        badge.textContent = `🏷️ ${t}`;
+        rowEl.appendChild(badge);
+      });
+    }
+
     // User-defined source edit & delete buttons (in dashboard tree)
     if (!isSelectable && node.sourceId && node.sourceType === 'user') {
       const actionGroup = document.createElement('div');
@@ -476,7 +589,7 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
       editBtn.title = 'Edit this source folder path or drive';
       editBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        openEditSourceModal(node.sourceId, node.name, node.hostPath);
+        openEditSourceModal(node.sourceId, node.name, node.hostPath, node.tags);
       });
 
       const delBtn = document.createElement('button');
@@ -653,16 +766,77 @@ function getSelectedContainersFromTree() {
   return Array.from(taskSelectedFoldersSet);
 }
 
+let activeSourceTagFilter = 'all';
+let activeSourceSearchQuery = '';
+
+function renderSourceTagPills() {
+  const container = document.getElementById('source-tag-pills');
+  if (!container) return;
+
+  const tagSet = new Set();
+  detectedSources.forEach(s => {
+    if (s.tags) {
+      s.tags.split(',').map(t => t.trim()).filter(Boolean).forEach(t => tagSet.add(t));
+    }
+  });
+
+  const tags = Array.from(tagSet).sort();
+  let html = `<span class="tag-pill ${activeSourceTagFilter === 'all' ? 'active' : ''}" onclick="filterSourcesByTag('all')">🏷️ All Folders (${detectedSources.length})</span>`;
+  tags.forEach(t => {
+    const count = detectedSources.filter(s => s.tags && s.tags.toLowerCase().split(',').map(x => x.trim()).includes(t.toLowerCase())).length;
+    html += `<span class="tag-pill ${activeSourceTagFilter.toLowerCase() === t.toLowerCase() ? 'active' : ''}" onclick="filterSourcesByTag('${escapeHtml(t)}')">🏷️ ${escapeHtml(t)} (${count})</span>`;
+  });
+  container.innerHTML = html;
+}
+
+function filterSourcesByTag(tag) {
+  activeSourceTagFilter = tag;
+  renderSourceTagPills();
+  renderDashboardTreeExplorer();
+}
+
+function onSourceSearchInput(query) {
+  activeSourceSearchQuery = (query || '').toLowerCase().trim();
+  renderDashboardTreeExplorer();
+}
+
 function renderDashboardTreeExplorer() {
   const dashboardContainer = document.getElementById('dashboard-container-tree');
   if (!dashboardContainer) return;
+
+  renderSourceTagPills();
 
   if (detectedSources.length === 0) {
     dashboardContainer.innerHTML = '<div class="empty-state"><p>No container volumes detected. Click <strong>Add Source Folder</strong> to add one.</p></div>';
     return;
   }
 
-  const treeData = buildContainerTree(detectedSources);
+  let sourcesToRender = detectedSources;
+
+  if (activeSourceTagFilter !== 'all') {
+    const targetTag = activeSourceTagFilter.toLowerCase();
+    sourcesToRender = sourcesToRender.filter(s => {
+      const sourceTags = (s.tags || '').toLowerCase().split(',').map(t => t.trim());
+      return sourceTags.includes(targetTag);
+    });
+  }
+
+  if (activeSourceSearchQuery) {
+    sourcesToRender = sourcesToRender.filter(s => {
+      const name = (s.name || '').toLowerCase();
+      const host = (s.hostPath || '').toLowerCase();
+      const container = (s.containerPath || '').toLowerCase();
+      const tags = (s.tags || '').toLowerCase();
+      return name.includes(activeSourceSearchQuery) || host.includes(activeSourceSearchQuery) || container.includes(activeSourceSearchQuery) || tags.includes(activeSourceSearchQuery);
+    });
+  }
+
+  if (sourcesToRender.length === 0) {
+    dashboardContainer.innerHTML = '<div class="empty-state"><p>No source folders match the current filter/search.</p></div>';
+    return;
+  }
+
+  const treeData = buildContainerTree(sourcesToRender);
   renderTreeWidget(treeData, dashboardContainer, false);
 }
 
@@ -758,7 +932,10 @@ function filterByRemoteService(remoteName) {
     historyFilter.value = remoteName;
     filterAndRenderHistory();
   }
-  document.querySelector('.tasks-section')?.scrollIntoView({ behavior: 'smooth' });
+  const targetEl = document.getElementById('tasks-container')?.closest('.section-panel') || document.getElementById('tasks-container');
+  if (targetEl) {
+    targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 async function fetchRemoteQuotas() {
@@ -938,6 +1115,43 @@ function renderRemotesStatusGrid() {
   }).join('');
 }
 
+function filterByRemoteService(remoteName) {
+  const filterSelect = document.getElementById('tasks-remote-filter');
+  if (filterSelect) {
+    let found = false;
+    for (let i = 0; i < filterSelect.options.length; i++) {
+      if (filterSelect.options[i].value === remoteName) {
+        filterSelect.selectedIndex = i;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      const opt = document.createElement('option');
+      opt.value = remoteName;
+      opt.textContent = `☁️ ${remoteName}`;
+      filterSelect.appendChild(opt);
+      filterSelect.value = remoteName;
+    }
+  }
+
+  // Re-render tasks filtered by selected remote
+  renderTasks();
+
+  // Smoothly auto-scroll down to the tasks matrix section
+  const tasksContainer = document.getElementById('tasks-container')?.closest('.section-panel') || document.getElementById('tasks-container');
+  if (tasksContainer) {
+    tasksContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+// Wire change event listener for tasks-remote-filter
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('tasks-remote-filter')?.addEventListener('change', () => {
+    renderTasks();
+  });
+});
+
 let activeReauthMode = 'standard';
 
 function switchReauthMode(mode) {
@@ -1083,6 +1297,35 @@ async function fetchSettings() {
     if (headerBadge) {
       headerBadge.textContent = `💻 Node: ${nodeName}`;
     }
+
+    // Populate Zero-Knowledge Encryption Settings
+    if (document.getElementById('setting-encryption-enabled')) {
+      document.getElementById('setting-encryption-enabled').checked = (data.encryption_enabled === 'true' || data.encryption_enabled === true);
+    }
+    if (data.encryption_password && document.getElementById('setting-encryption-password')) {
+      document.getElementById('setting-encryption-password').value = data.encryption_password;
+    }
+    if (data.encryption_salt && document.getElementById('setting-encryption-salt')) {
+      document.getElementById('setting-encryption-salt').value = data.encryption_salt;
+    }
+    const encBadge = document.getElementById('encryption-status-badge');
+    if (encBadge) {
+      const isEncActive = (data.encryption_enabled === 'true' || data.encryption_enabled === true);
+      encBadge.textContent = isEncActive ? 'Active' : 'Optional';
+      encBadge.className = isEncActive ? 'badge badge-success' : 'badge badge-secondary';
+    }
+
+    // Populate Windows Explorer Context Menu Status
+    if (window.desktopApi && typeof window.desktopApi.getContextMenuStatus === 'function') {
+      try {
+        const isRegistered = await window.desktopApi.getContextMenuStatus();
+        const toggle = document.getElementById('setting-context-menu-toggle');
+        if (toggle) toggle.checked = !!isRegistered;
+        updateContextMenuBadge(isRegistered);
+      } catch (err) {
+        console.warn('Failed querying context menu status:', err);
+      }
+    }
   } catch (e) {}
 }
 
@@ -1220,7 +1463,8 @@ function renderHistoryTable(logs) {
   }
 
   tbody.innerHTML = logs.map(log => {
-    const statusClass = `status-${log.status || 'idle'}`;
+    const statusClass = log.status === 'partial' ? 'status-badge-partial' : `status-${log.status || 'idle'}`;
+    const statusLabel = log.status === 'partial' ? '⚠️ PARTIAL' : (log.status || 'IDLE').toUpperCase();
     const startTimeStr = log.start_time ? new Date(log.start_time).toLocaleString() : '--';
     const durationSec = log.end_time ? ((new Date(log.end_time) - new Date(log.start_time)) / 1000) : null;
     const durationStr = log.end_time ? formatDuration(durationSec) : 'Running...';
@@ -1228,7 +1472,7 @@ function renderHistoryTable(logs) {
     return `
       <tr>
         <td><strong>${escapeHtml(log.task_name)}</strong></td>
-        <td><span class="status-pill ${statusClass}">${(log.status || 'IDLE').toUpperCase()}</span></td>
+        <td><span class="status-pill ${statusClass}">${statusLabel}</span></td>
         <td><span class="path-code">${escapeHtml(log.bytes_transferred || '0 B')}</span></td>
         <td>${startTimeStr}</td>
         <td>${durationStr}</td>
@@ -1262,7 +1506,7 @@ async function viewLogDetail(logId) {
 function downloadLogAsFile(log) {
   const sanitizedName = log.task_name.replace(/[^a-z0-9_-]/gi, '_');
   const filename = `backup_log_${sanitizedName}_${log.id.slice(0, 8)}.txt`;
-  const textContent = `=== AutoBackup Hub Execution Log ===
+  const textContent = `=== AutoBackup Execution Log ===
 Task Name: ${log.task_name}
 Log ID: ${log.id}
 Status: ${log.status}
@@ -1435,13 +1679,50 @@ function handleWebSocketMessage(msg) {
     updateActiveTransferProgress(data.taskId, data.logLine);
   } else if (type === 'task_progress') {
     updateProgressLine(data.progressText);
+  } else if (type === 'task_paused') {
+    appendConsoleLine(`[Pause] ⏸️ Task paused: ${data.taskName} (Reason: ${data.reason || 'User'})`, 'system');
+    setTaskStatusOptimistic(data.taskId, 'paused');
+    window.desktopApi?.showNotification?.(`⏸️ Backup Paused: ${data.taskName}`, `Reason: ${data.reason || 'User'}`);
+    fetchTasks();
+  } else if (type === 'task_resumed') {
+    appendConsoleLine(`[Resume] ▶️ Task resumed: ${data.taskName}`, 'system');
+    setTaskStatusOptimistic(data.taskId, 'running');
+    fetchTasks();
+  } else if (type === 'network_status') {
+    handleNetworkStatusChange(data.online, data.message);
+  } else if (type === 'watcher_event') {
+    appendConsoleLine(`[Watcher] 📁 ${data.message}`, 'system');
+    if (data.message && data.message.includes('Launching instant backup')) {
+      window.desktopApi?.showNotification?.('⚡ Instant Sync Triggered', data.message);
+    }
+  } else if (type === 'task_slowdown') {
+    appendConsoleLine(`[Bandwidth Warning] ⚠️ Task ${data.taskId} severe slowdown detected (${data.speed || 'slow'}). Keeping connection alive and retrying chunks.`, 'error');
   } else if (type === 'task_finished') {
     removeProgressLine();
-    const statusType = data.status === 'success' ? 'system' : 'error';
-    appendConsoleLine(`=== Task Finished: ${data.taskName} [${data.status.toUpperCase()}] Transferred: ${data.bytesTransferred} ===\n`, statusType);
-    setTaskStatusOptimistic(data.taskId, data.status);
+    const isPartial = data.isPartial || data.status === 'partial';
+    let statusType = 'system';
+    if (isPartial) statusType = 'warning';
+    else if (data.status !== 'success') statusType = 'error';
+
+    if (isPartial) {
+      appendConsoleLine(`=== ⚠️ Task Finished with Warnings: ${data.taskName} [PARTIAL] (${data.failedFilesCount || 1} file(s) skipped/locked). Transferred: ${data.bytesTransferred} ===\n`, 'warning');
+    } else {
+      appendConsoleLine(`=== Task Finished: ${data.taskName} [${data.status.toUpperCase()}] Transferred: ${data.bytesTransferred} ===\n`, statusType);
+    }
+    setTaskStatusOptimistic(data.taskId, isPartial ? 'partial' : data.status);
     hideTaskProgressBar(data.taskId);
-    removeActiveTransferBanner(data.taskId, data.status, data.bytesTransferred);
+    removeActiveTransferBanner(data.taskId, isPartial ? 'partial' : data.status, data.bytesTransferred);
+
+    if (window.desktopApi && typeof window.desktopApi.showNotification === 'function') {
+      if (isPartial) {
+        window.desktopApi.showNotification(`⚠️ Backup Partial: ${data.taskName}`, `Transferred: ${data.bytesTransferred}. ${data.failedFilesCount || 1} file(s) skipped due to locks/errors.`);
+      } else if (data.status === 'success') {
+        window.desktopApi.showNotification(`✅ Backup Complete: ${data.taskName}`, `Transferred: ${data.bytesTransferred}. All files secured.`);
+      } else {
+        window.desktopApi.showNotification(`❌ Backup Failed: ${data.taskName}`, `Task status: ${data.status.toUpperCase()}`);
+      }
+    }
+
     fetchTasks();
     fetchHistoryLogs();
     fetchStatus();
@@ -1490,8 +1771,13 @@ function handleWebSocketMessage(msg) {
 function setTaskStatusOptimistic(taskId, status) {
   const pill = document.getElementById(`status-pill-${taskId}`);
   if (pill) {
-    pill.className = `status-pill status-${status}`;
-    pill.textContent = status.toUpperCase();
+    if (status === 'partial') {
+      pill.className = 'status-pill status-badge-partial';
+      pill.textContent = '⚠️ PARTIAL';
+    } else {
+      pill.className = `status-pill status-${status}`;
+      pill.textContent = status.toUpperCase();
+    }
   }
   const progressBar = document.getElementById(`progress-bar-${taskId}`);
   if (progressBar) {
@@ -2273,7 +2559,7 @@ async function handleEditNativePicker() {
   }
 }
 
-function openAddSourceModal() {
+function openAddSourceModal(initialPath = null) {
   const modal = document.getElementById('modal-add-source');
   if (!modal) return;
   modal.classList.add('active');
@@ -2294,6 +2580,17 @@ function openAddSourceModal() {
   if (driveSelect) {
     driveSelect.value = lastDrive;
     driveSelect.onchange = handleSourceDriveChange;
+  }
+
+  if (initialPath) {
+    if (pathInput) pathInput.value = initialPath;
+    const folderName = initialPath.split(/[\\\/]/).filter(Boolean).pop() || 'Source Folder';
+    if (nameInput) nameInput.value = folderName;
+    const dm = initialPath.match(/^([A-Za-z]):/);
+    if (dm && driveSelect) {
+      driveSelect.value = dm[1].toUpperCase() + ':';
+    }
+    updateSourceModalButtonState();
   }
 
   // Check if running on cloud deployment (Railway) vs local docker/host
@@ -2347,6 +2644,7 @@ function openAddSourceModal() {
 async function saveSourceFolder() {
   const name = document.getElementById('source-name-input').value.trim();
   const rawInput = document.getElementById('source-host-path-input').value.trim();
+  const tags = document.getElementById('source-tags-input')?.value.trim() || '';
 
   const selectedPaths = folderBrowserState.selectedPaths ? Array.from(folderBrowserState.selectedPaths) : [];
   let sourcesToAdd = [];
@@ -2355,13 +2653,14 @@ async function saveSourceFolder() {
     sourcesToAdd = selectedPaths.map(containerPath => {
       const winPath = containerPath.replace(/^\/hostfs\/([A-Z])\//, '$1:/').replace(/^\/hostfs\/([A-Z])$/, '$1:/');
       const baseName = name || winPath.split(/[\/\\]/).pop() || 'Folder';
-      return { name: baseName, host_path: winPath };
+      return { name: baseName, host_path: winPath, tags };
     });
   } else if (rawInput) {
     const rawList = rawInput.split(',').map(s => s.trim()).filter(Boolean);
     sourcesToAdd = rawList.map(hp => ({
       name: name || hp.split(/[\/\\]/).pop() || 'Folder',
-      host_path: hp
+      host_path: hp,
+      tags
     }));
   }
 
@@ -2380,7 +2679,7 @@ async function saveSourceFolder() {
     const res = await fetch('/api/sources', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sources: sourcesToAdd })
+      body: JSON.stringify({ sources: sourcesToAdd, tags })
     });
     const data = await res.json();
     if (!res.ok || data.error) {
@@ -2388,6 +2687,8 @@ async function saveSourceFolder() {
       return;
     }
     document.getElementById('modal-add-source').classList.remove('active');
+    const tagsInput = document.getElementById('source-tags-input');
+    if (tagsInput) tagsInput.value = '';
     await fetchSources();
     appendConsoleLine(`[System] ✅ Added ${data.count} source folder(s) successfully!`, 'system');
   } catch (err) {
@@ -2400,7 +2701,7 @@ async function saveSourceFolder() {
   }
 }
 
-function openEditSourceModal(id, name, hostPath) {
+function openEditSourceModal(id, name, hostPath, tags) {
   const modal = document.getElementById('modal-edit-source');
   if (!modal) return;
   modal.classList.add('active');
@@ -2408,12 +2709,14 @@ function openEditSourceModal(id, name, hostPath) {
   const idInput = document.getElementById('edit-source-id');
   const nameInput = document.getElementById('edit-source-name');
   const pathInput = document.getElementById('edit-source-path');
+  const tagsInput = document.getElementById('edit-source-tags');
   const driveSelect = document.getElementById('edit-source-drive-select');
   const preview = document.getElementById('edit-source-container-preview');
 
   if (idInput) idInput.value = id;
   if (nameInput) nameInput.value = name || '';
   if (pathInput) pathInput.value = hostPath || '';
+  if (tagsInput) tagsInput.value = tags || '';
 
   // Auto-detect drive letter from hostPath
   const driveMatch = (hostPath || '').match(/^([A-Za-z]):/);
@@ -2467,6 +2770,7 @@ async function saveEditedSource(e) {
   const id = document.getElementById('edit-source-id')?.value;
   const name = document.getElementById('edit-source-name')?.value.trim();
   const hostPath = document.getElementById('edit-source-path')?.value.trim();
+  const tags = document.getElementById('edit-source-tags')?.value.trim() || '';
   const btnSave = document.getElementById('btn-save-edited-source');
 
   if (!id || !hostPath) {
@@ -2483,7 +2787,7 @@ async function saveEditedSource(e) {
     const res = await fetch(`/api/sources/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, host_path: hostPath })
+      body: JSON.stringify({ name, host_path: hostPath, tags })
     });
     const data = await res.json();
     if (!res.ok || data.error) {
@@ -2522,6 +2826,12 @@ function setupEventListeners() {
   document.getElementById('btn-test-telegram')?.addEventListener('click', () => sendTestNotificationChannel('telegram'));
   document.getElementById('btn-export-backup-bundle')?.addEventListener('click', exportHubSettings);
   document.getElementById('btn-save-device-name')?.addEventListener('click', saveDeviceName);
+  document.getElementById('btn-open-link-device')?.addEventListener('click', openLinkDeviceModal);
+  document.getElementById('btn-bulk-remove-sources')?.addEventListener('click', openBulkRemoveModal);
+  document.getElementById('btn-publish-discord-release')?.addEventListener('click', publishReleaseToDiscord);
+
+  window.addEventListener('online', () => handleNetworkStatusChange(true, 'Internet connection restored'));
+  window.addEventListener('offline', () => handleNetworkStatusChange(false, 'Internet connection disconnected'));
 
   // Quick Folder Adder in Task Modal
   document.getElementById('btn-task-add-quick-path')?.addEventListener('click', () => {
@@ -2717,10 +3027,56 @@ function setupEventListeners() {
     saveSettingKey({ telegram_bot_token: token, telegram_chat_id: chatId }, 'Telegram Bot credentials saved successfully!');
   });
 
+  // Zero-Knowledge Client-Side Cloud Encryption Save Listener
+  document.getElementById('btn-save-encryption')?.addEventListener('click', saveEncryptionSettings);
+
+  // Windows Explorer Right-Click Context Menu Toggle
+  const contextToggle = document.getElementById('setting-context-menu-toggle');
+  if (contextToggle) {
+    contextToggle.addEventListener('change', async (e) => {
+      const enable = e.target.checked;
+      if (window.desktopApi && typeof window.desktopApi.setContextMenuStatus === 'function') {
+        try {
+          const res = await window.desktopApi.setContextMenuStatus(enable);
+          updateContextMenuBadge(res.registered);
+          appendConsoleLine(`[Desktop] Windows Explorer right-click integration ${enable ? 'enabled' : 'disabled'}.`, 'system');
+        } catch (err) {
+          alert('Failed to update context menu integration: ' + err.message);
+          e.target.checked = !enable;
+        }
+      } else {
+        alert('Explorer context menu integration is only available in the Electron desktop app.');
+        e.target.checked = false;
+      }
+    });
+  }
+
+  // Windows Explorer incoming folder handler
+  if (window.desktopApi && typeof window.desktopApi.onAddSourceFromExplorer === 'function') {
+    window.desktopApi.onAddSourceFromExplorer((folderPath) => {
+      if (folderPath) {
+        appendConsoleLine(`[Desktop] Received folder from Windows Explorer: ${folderPath}`, 'system');
+        openAddSourceModal(folderPath);
+      }
+    });
+  }
+
   // Delegated clicks for task list
   document.getElementById('tasks-container')?.addEventListener('click', (e) => {
     const runBtn = e.target.closest('.btn-run-now');
     if (runBtn) { runTaskNow(runBtn.dataset.id); return; }
+
+    const pauseBtn = e.target.closest('.btn-pause-task');
+    if (pauseBtn) { pauseTaskNow(pauseBtn.dataset.id); return; }
+
+    const resumeBtn = e.target.closest('.btn-resume-task');
+    if (resumeBtn) { resumeTaskNow(resumeBtn.dataset.id); return; }
+
+    const partialBtn = e.target.closest('.btn-partial-run-task');
+    if (partialBtn) { openPartialTaskModal(partialBtn.dataset.id); return; }
+
+    const failedBtn = e.target.closest('.btn-failed-files');
+    if (failedBtn) { openFailedFilesModal(failedBtn.dataset.id); return; }
 
     const dryRunBtn = e.target.closest('.btn-dry-run');
     if (dryRunBtn) { runDryRunNow(dryRunBtn.dataset.id); return; }
@@ -3000,6 +3356,11 @@ function openTaskModal(task = null) {
     document.getElementById('task-priority').value = task.priority || 'normal';
     document.getElementById('task-bw-limit').value = task.bw_limit || '';
 
+    const rtCheck = document.getElementById('task-realtime-watch');
+    if (rtCheck) rtCheck.checked = !!(task && (task.realtime_watch === 1 || task.realtime_watch === '1' || task.realtime_watch === true));
+    const encCheck = document.getElementById('task-encrypt-backup');
+    if (encCheck) encCheck.checked = !!(task && (task.encrypt_backup === 1 || task.encrypt_backup === '1' || task.encrypt_backup === true));
+
     if (task.cron_schedule === 'custom' || (!['last_friday', 'monthly', 'weekly', 'daily', '*/15 * * * *', '0 * * * *', '0 */6 * * *'].includes(task.cron_schedule))) {
       document.getElementById('task-schedule-preset').value = 'custom';
       document.getElementById('group-custom-cron').classList.remove('hidden');
@@ -3013,6 +3374,11 @@ function openTaskModal(task = null) {
     document.getElementById('task-priority').value = 'critical';
     document.getElementById('task-bw-limit').value = '';
     document.getElementById('task-cron').value = 'last_friday';
+
+    const rtCheck = document.getElementById('task-realtime-watch');
+    if (rtCheck) rtCheck.checked = false;
+    const encCheck = document.getElementById('task-encrypt-backup');
+    if (encCheck) encCheck.checked = false;
   }
 
   renderTaskSelectedChips();
@@ -3063,6 +3429,8 @@ async function handleTaskFormSubmit(e) {
   const conflict_mode = document.getElementById('task-conflict').value;
   const priority = document.getElementById('task-priority').value;
   const bw_limit = document.getElementById('task-bw-limit').value;
+  const realtime_watch = document.getElementById('task-realtime-watch')?.checked ? 1 : 0;
+  const encrypt_backup = document.getElementById('task-encrypt-backup')?.checked ? 1 : 0;
   let cron_schedule = document.getElementById('task-schedule-preset').value;
 
   if (cron_schedule === 'custom') {
@@ -3072,7 +3440,7 @@ async function handleTaskFormSubmit(e) {
   if (!name) { alert('Error: Please enter a Task Name.'); return; }
   if (!target_remote) { alert('Error: Please select a Destination Cloud Remote.'); return; }
 
-  const payload = { name, source_path, target_remote, target_path, mode, conflict_mode, cron_schedule, priority, bw_limit, enabled: 1 };
+  const payload = { name, source_path, target_remote, target_path, mode, conflict_mode, cron_schedule, priority, bw_limit, realtime_watch, encrypt_backup, enabled: 1 };
 
   try {
     let res;
@@ -3130,7 +3498,7 @@ async function deleteTask(taskId) {
 }
 
 function switchSettingsModalTab(tabName) {
-  const tabs = ['remotes', 'notifications', 'security', 'backup', 'version'];
+  const tabs = ['remotes', 'notifications', 'security', 'encryption', 'backup', 'version'];
   tabs.forEach(t => {
     const btn = document.getElementById(`tab-btn-settings-${t}`);
     const content = document.getElementById(`tab-settings-${t}`);
@@ -3201,7 +3569,7 @@ async function checkAppUpdates(isManual = false) {
       const headerBadge = document.getElementById('header-version-badge');
       if (headerBadge) {
         headerBadge.className = 'version-pill';
-        headerBadge.title = `AutoBackup Hub v${data.currentVersion} • Up to date`;
+        headerBadge.title = `AutoBackup v${data.currentVersion} • Up to date`;
       }
     } else {
       if (checkStatusEl) {
@@ -3239,14 +3607,14 @@ async function checkAppUpdates(isManual = false) {
 
 async function exportHubSettings() {
   try {
-    appendConsoleLine('[System] Preparing AutoBackup Hub export bundle...', 'system');
+    appendConsoleLine('[System] Preparing AutoBackup export bundle...', 'system');
     const res = await fetch('/api/backup/export');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     const disposition = res.headers.get('content-disposition');
-    let filename = 'autobackup-hub-export.json';
+    let filename = 'autobackup-export.json';
     if (disposition && disposition.includes('filename=')) {
       filename = disposition.split('filename=')[1].replace(/["']/g, '').trim();
     }
@@ -3452,6 +3820,7 @@ function updatePCloudAuthCmd(hostname) {
 
 function renderRemoteProviderFields(provider) {
   const container = document.getElementById('remote-dynamic-fields');
+  if (!container) return;
   
   if (['drive', 'dropbox', 'box', 'pcloud', 'onedrive'].includes(provider)) {
     const providerName = provider === 'drive' ? 'Google Drive' : (provider === 'dropbox' ? 'Dropbox' : (provider === 'pcloud' ? 'pCloud' : (provider === 'box' ? 'Box.com' : 'OneDrive')));
@@ -3806,3 +4175,928 @@ async function sendTestNotificationChannel(channelType) {
     }
   }
 }
+
+// ─── Phase 1 & 2 Actions: Pause, Resume, Partial Run, Device Link, Discord Release, Bulk Delete ───
+
+async function pauseTaskNow(taskId) {
+  try {
+    appendConsoleLine(`[System] Requesting pause for task ${taskId}...`, 'system');
+    const res = await fetch(`/api/tasks/${taskId}/pause`, { method: 'POST' });
+    const data = await res.json();
+    if (data.error) {
+      alert('Error pausing task: ' + data.error);
+    } else {
+      appendConsoleLine(`[System] Task ${taskId} paused.`, 'system');
+      fetchTasks();
+    }
+  } catch (err) {
+    alert('Failed to pause task: ' + err.message);
+  }
+}
+
+async function resumeTaskNow(taskId) {
+  try {
+    appendConsoleLine(`[System] Resuming task ${taskId}...`, 'system');
+    const res = await fetch(`/api/tasks/${taskId}/resume`, { method: 'POST' });
+    const data = await res.json();
+    if (data.error) {
+      alert('Error resuming task: ' + data.error);
+    } else {
+      appendConsoleLine(`[System] Task ${taskId} resumed.`, 'system');
+      fetchTasks();
+    }
+  } catch (err) {
+    alert('Failed to resume task: ' + err.message);
+  }
+}
+
+let activePartialTaskId = null;
+
+async function openPartialTaskModal(taskId) {
+  const task = currentTasks.find(t => String(t.id) === String(taskId));
+  if (!task) return;
+
+  activePartialTaskId = taskId;
+  const modal = document.getElementById('modal-partial-task');
+  const titleEl = document.getElementById('partial-task-title');
+  const idInput = document.getElementById('partial-task-id');
+  const listEl = document.getElementById('partial-sources-list');
+  const descEl = document.getElementById('partial-task-desc');
+
+  if (titleEl) titleEl.textContent = `📂 Run Partial Backup: ${task.name}`;
+  if (idInput) idInput.value = taskId;
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.82rem; padding:0.8rem; text-align:center;">⏳ Loading folder structure & sub-items...</div>';
+  modal?.classList.add('active');
+
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/sources-detail`);
+    const detail = await res.json();
+    const sources = (detail && Array.isArray(detail.sources)) ? detail.sources : [];
+
+    if (sources.length === 0) {
+      listEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; padding:0.5rem;">No source paths configured for this task.</div>';
+      updatePartialSelectedCount();
+      return;
+    }
+
+    if (descEl) {
+      descEl.textContent = detail.isMultiFolder
+        ? 'Select the specific folders or containers to backup. You can also expand any folder to select specific subdirectories or files:'
+        : 'Select the entire source folder, or pick specific subdirectories and files to backup in this run:';
+    }
+
+    listEl.innerHTML = sources.map((src, idx) => {
+      const itemsCount = src.items ? src.items.length : 0;
+      const subitemsHtml = itemsCount > 0 ? `
+        <div class="partial-subitems-container" id="partial-subitems-${idx}" style="display: ${detail.isMultiFolder ? 'none' : 'flex'};">
+          <div style="font-size: 0.7rem; color: var(--accent-cyan); font-weight: 600; margin-bottom: 0.2rem; display: flex; justify-content: space-between;">
+            <span>Sub-items in ${escapeHtml(src.name)} (${itemsCount}):</span>
+            <span>Uncheck to exclude specific files</span>
+          </div>
+          ${src.items.map((item, iIdx) => `
+            <label class="partial-subitem-row">
+              <input type="checkbox" class="partial-item-cb" data-src-idx="${idx}" value="${escapeHtml(item.relPath)}" checked onchange="updatePartialSelectedCount()">
+              <span>${item.isDir ? '📁' : '📄'}</span>
+              <span style="font-family:var(--font-mono);">${escapeHtml(item.name)}</span>
+            </label>
+          `).join('')}
+        </div>
+      ` : '';
+
+      const expandBtnHtml = itemsCount > 0 ? `
+        <button type="button" class="btn-toggle-subitems" onclick="togglePartialSubitemsCollapse(${idx})">
+          ${detail.isMultiFolder ? `📂 Drill Down (${itemsCount} items)` : `📂 Hide Sub-items`}
+        </button>
+      ` : '';
+
+      return `
+        <div class="partial-source-card" data-src-idx="${idx}">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; flex: 1; min-width: 0;">
+              <input type="checkbox" class="partial-source-cb" data-src-idx="${idx}" value="${escapeHtml(src.raw)}" checked onchange="handlePartialFolderCheckChange(this, ${idx})">
+              <div style="display: flex; flex-direction: column; overflow: hidden;">
+                <span style="font-weight: 600; font-size: 0.84rem; color: var(--text-main);">${escapeHtml(src.name)}</span>
+                <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-dim); text-overflow: ellipsis; white-space: nowrap; overflow: hidden;">${escapeHtml(src.resolved || src.raw)}</span>
+              </div>
+            </label>
+            <div style="display: flex; align-items: center; gap: 0.4rem; margin-left: 0.5rem;">
+              ${expandBtnHtml}
+            </div>
+          </div>
+          ${subitemsHtml}
+        </div>
+      `;
+    }).join('');
+
+    updatePartialSelectedCount();
+  } catch (err) {
+    listEl.innerHTML = `<div style="color:#fb7185; font-size:0.8rem; padding:0.5rem;">⚠️ Failed loading source structure: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function togglePartialSubitemsCollapse(idx) {
+  const container = document.getElementById(`partial-subitems-${idx}`);
+  if (!container) return;
+  const isHidden = (container.style.display === 'none');
+  container.style.display = isHidden ? 'flex' : 'none';
+}
+
+function handlePartialFolderCheckChange(folderCb, idx) {
+  const itemCheckboxes = document.querySelectorAll(`.partial-item-cb[data-src-idx="${idx}"]`);
+  itemCheckboxes.forEach(cb => {
+    cb.checked = folderCb.checked;
+  });
+  updatePartialSelectedCount();
+}
+
+function updatePartialSelectedCount() {
+  const listEl = document.getElementById('partial-sources-list');
+  const countEl = document.getElementById('partial-selected-count');
+  if (!listEl || !countEl) return;
+
+  const folderCbs = listEl.querySelectorAll('.partial-source-cb');
+  const checkedFolders = listEl.querySelectorAll('.partial-source-cb:checked');
+  const itemCbs = listEl.querySelectorAll('.partial-item-cb');
+  const checkedItems = listEl.querySelectorAll('.partial-item-cb:checked');
+
+  if (itemCbs.length > 0 && folderCbs.length === 1) {
+    countEl.textContent = `${checkedItems.length} of ${itemCbs.length} items selected`;
+  } else {
+    countEl.textContent = `${checkedFolders.length} of ${folderCbs.length} folder(s) selected`;
+  }
+
+  const btnRun = document.getElementById('btn-execute-partial-run');
+  if (btnRun) {
+    const hasAnyChecked = (checkedFolders.length > 0) || (checkedItems.length > 0);
+    btnRun.disabled = !hasAnyChecked;
+  }
+}
+
+function toggleAllPartialSources(checked) {
+  const listEl = document.getElementById('partial-sources-list');
+  if (!listEl) return;
+  listEl.querySelectorAll('.partial-source-cb').forEach(cb => { cb.checked = checked; });
+  listEl.querySelectorAll('.partial-item-cb').forEach(cb => { cb.checked = checked; });
+  updatePartialSelectedCount();
+}
+
+async function executePartialTaskRun() {
+  if (!activePartialTaskId) return;
+  const listEl = document.getElementById('partial-sources-list');
+  const checkedFolders = Array.from(listEl?.querySelectorAll('.partial-source-cb:checked') || []).map(cb => cb.value);
+
+  // Check if any sub-items are selectively chosen (or excluded)
+  const allItemCbs = Array.from(listEl?.querySelectorAll('.partial-item-cb') || []);
+  const checkedItemCbs = Array.from(listEl?.querySelectorAll('.partial-item-cb:checked') || []);
+  
+  let subPaths = null;
+  // If sub-item selection was shown and user unchecked some items
+  if (allItemCbs.length > 0 && checkedItemCbs.length < allItemCbs.length) {
+    subPaths = checkedItemCbs.map(cb => cb.value);
+  }
+
+  if (checkedFolders.length === 0 && (!subPaths || subPaths.length === 0)) {
+    alert('Please select at least one folder or item to run.');
+    return;
+  }
+
+  const btn = document.getElementById('btn-execute-partial-run');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '🚀 Starting Partial Run...';
+  }
+
+  try {
+    const payload = { selected_sources: checkedFolders };
+    if (subPaths && subPaths.length > 0) {
+      payload.sub_paths = subPaths;
+    }
+
+    const res = await fetch(`/api/tasks/${activePartialTaskId}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    appendConsoleLine(`[System] Partial task execution started (${checkedFolders.length} folder(s)${subPaths ? `, ${subPaths.length} items` : ''}).`, 'system');
+    document.getElementById('modal-partial-task')?.classList.remove('active');
+    fetchTasks();
+  } catch (err) {
+    alert('Failed to start partial task run: ' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🚀 Run Partial Backup';
+    }
+  }
+}
+
+let pairingCountdownTimer = null;
+let currentPairingRawCode = '';
+
+function switchPairingModalTab(tab) {
+  const tabs = ['code', 'enter', 'qr'];
+  tabs.forEach(t => {
+    const el = document.getElementById(`pair-tab-${t}`);
+    const btn = document.getElementById(`tab-btn-pair-${t}`);
+    if (el) el.style.display = (t === tab) ? (t === 'qr' ? 'flex' : 'block') : 'none';
+    if (btn) {
+      if (t === tab) {
+        btn.classList.add('active');
+        btn.style.color = 'var(--accent-cyan)';
+        btn.style.borderBottomColor = 'var(--accent-cyan)';
+      } else {
+        btn.classList.remove('active');
+        btn.style.color = 'var(--text-muted)';
+        btn.style.borderBottomColor = 'transparent';
+      }
+    }
+  });
+}
+
+async function fetchPairingCode(forceRefresh = false) {
+  const codeDisplay = document.getElementById('pairing-code-display');
+  const countdownText = document.getElementById('pairing-countdown-text');
+  const urlInput = document.getElementById('pairing-url-input');
+  const qrImg = document.getElementById('pairing-qr-image');
+  const firewallInput = document.getElementById('firewall-cmd-input');
+
+  if (codeDisplay) codeDisplay.textContent = '... ...';
+
+  try {
+    const res = await fetch(`/api/network/pairing-code?refresh=${forceRefresh ? '1' : '0'}`);
+    const data = await res.json();
+
+    if (data.success) {
+      currentPairingRawCode = data.rawCode;
+      if (codeDisplay) codeDisplay.textContent = data.code;
+      if (urlInput) urlInput.value = data.pairingUrl || window.location.origin;
+      if (firewallInput && data.firewallCommand) firewallInput.value = data.firewallCommand;
+
+      if (qrImg) {
+        const qrUrl = data.pairingUrl || window.location.origin;
+        qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=${encodeURIComponent(qrUrl)}`;
+      }
+
+      // Start Countdown
+      let secondsLeft = data.remainingSeconds || 900;
+      if (pairingCountdownTimer) clearInterval(pairingCountdownTimer);
+      pairingCountdownTimer = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft <= 0) {
+          clearInterval(pairingCountdownTimer);
+          if (countdownText) countdownText.textContent = '⚠️ Code expired. Click Refresh';
+          if (codeDisplay) codeDisplay.textContent = 'EXPIRED';
+        } else {
+          const mins = Math.floor(secondsLeft / 60);
+          const secs = secondsLeft % 60;
+          if (countdownText) {
+            countdownText.textContent = `⏳ Expires in ${mins}:${secs < 10 ? '0' : ''}${secs}`;
+          }
+        }
+      }, 1000);
+    }
+  } catch (err) {
+    console.warn('[Pairing] Error fetching pairing code:', err);
+    if (codeDisplay) codeDisplay.textContent = 'OFFLINE';
+  }
+}
+
+function copyPairingCode() {
+  const code = currentPairingRawCode || document.getElementById('pairing-code-display')?.textContent?.replace(/\s+/g, '');
+  if (code) {
+    navigator.clipboard.writeText(code);
+    const countText = document.getElementById('pairing-countdown-text');
+    if (countText) {
+      const orig = countText.textContent;
+      countText.textContent = '✅ Code Copied to Clipboard!';
+      setTimeout(() => { countText.textContent = orig; }, 2000);
+    }
+  }
+}
+
+function copyFirewallCommand() {
+  const input = document.getElementById('firewall-cmd-input');
+  if (input) {
+    navigator.clipboard.writeText(input.value);
+    alert('Firewall command copied! Run it in PowerShell (Admin) on your host PC to open port 3000.');
+  }
+}
+
+async function submitPairingCode() {
+  const codeInput = document.getElementById('input-verify-pairing-code');
+  const nameInput = document.getElementById('input-verify-device-name');
+  const statusDiv = document.getElementById('pair-verify-status');
+  const btn = document.getElementById('btn-submit-verify-code');
+
+  const code = codeInput ? codeInput.value.trim() : '';
+  if (!code) {
+    alert('Please enter the 6-digit code shown on your host computer.');
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Verifying Code...';
+  }
+
+  try {
+    const res = await fetch('/api/network/verify-pairing-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        clientDeviceName: nameInput?.value?.trim() || navigator.userAgent.slice(0, 30),
+        platform: /iPad|iPhone|Android|Tablet/i.test(navigator.userAgent) ? 'tablet' : 'desktop'
+      })
+    });
+
+    const data = await res.json();
+
+    if (statusDiv) {
+      statusDiv.style.display = 'block';
+      if (data.success) {
+        statusDiv.style.color = '#34d399';
+        statusDiv.innerHTML = `✅ <strong>Successfully Linked!</strong> Connected to host <em>${escapeHtml(data.hostDeviceName || 'AutoBackup')}</em>.`;
+        if (data.token) {
+          localStorage.setItem('autobackup_linked_token', data.token);
+        }
+        setTimeout(() => {
+          document.getElementById('modal-link-device')?.classList.remove('active');
+        }, 2200);
+      } else {
+        statusDiv.style.color = '#f87171';
+        statusDiv.innerHTML = `❌ ${escapeHtml(data.error || 'Failed to verify pairing code')}`;
+      }
+    }
+  } catch (err) {
+    if (statusDiv) {
+      statusDiv.style.display = 'block';
+      statusDiv.style.color = '#f87171';
+      statusDiv.textContent = '❌ Network error connecting to host.';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🔗 Link This Device Now';
+    }
+  }
+}
+
+async function openLinkDeviceModal() {
+  const modal = document.getElementById('modal-link-device');
+  modal?.classList.add('active');
+  switchPairingModalTab('code');
+  await fetchPairingCode(false);
+
+  // Fetch count of linked devices
+  try {
+    const res = await fetch('/api/network/linked-devices');
+    const data = await res.json();
+    const countEl = document.getElementById('linked-devices-count-text');
+    if (countEl && data.devices) {
+      countEl.textContent = `Linked Devices: ${data.devices.length}`;
+    }
+  } catch (e) {}
+}
+
+function copyPairingUrl() {
+  const urlInput = document.getElementById('pairing-url-input');
+  if (urlInput) {
+    navigator.clipboard.writeText(urlInput.value);
+    const btn = document.getElementById('btn-copy-pairing-url');
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '✅ Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 2000);
+    }
+  }
+}
+
+// ── Auto-Update Engine & Dialog ──
+let latestUpdateInfo = null;
+
+async function checkAppUpdates() {
+  const modal = document.getElementById('modal-app-update');
+  const iconEl = document.getElementById('update-icon-indicator');
+  const headingEl = document.getElementById('update-heading-text');
+  const descEl = document.getElementById('update-description-text');
+  const notesBox = document.getElementById('update-release-notes-box');
+  const progressBar = document.getElementById('update-progress-container');
+  const actionBtn = document.getElementById('btn-update-action');
+
+  modal?.classList.add('active');
+  if (iconEl) iconEl.textContent = '🔄';
+  if (headingEl) headingEl.textContent = 'Checking for Updates...';
+  if (descEl) descEl.textContent = 'Querying GitHub releases for the latest AutoBackup package...';
+  if (notesBox) notesBox.style.display = 'none';
+  if (progressBar) progressBar.style.display = 'none';
+  if (actionBtn) {
+    actionBtn.disabled = true;
+    actionBtn.textContent = 'Checking...';
+  }
+
+  try {
+    // If running in Desktop app with electron-updater
+    if (window.desktopApi && typeof window.desktopApi.checkForUpdates === 'function') {
+      window.desktopApi.onUpdateStatus((statusData) => {
+        handleDesktopUpdateStatus(statusData);
+      });
+      const checkRes = await window.desktopApi.checkForUpdates();
+      if (checkRes && checkRes.devMode) {
+        // Fallback to web API in development mode
+        await fetchWebVersionCheck();
+      }
+    } else {
+      await fetchWebVersionCheck();
+    }
+  } catch (err) {
+    if (headingEl) headingEl.textContent = 'Update Check Error';
+    if (descEl) descEl.textContent = err.message || 'Failed to connect to update server.';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Retry';
+    }
+  }
+}
+
+async function fetchWebVersionCheck() {
+  const iconEl = document.getElementById('update-icon-indicator');
+  const headingEl = document.getElementById('update-heading-text');
+  const descEl = document.getElementById('update-description-text');
+  const notesBox = document.getElementById('update-release-notes-box');
+  const actionBtn = document.getElementById('btn-update-action');
+
+  const res = await fetch('/api/version/check');
+  const data = await res.json();
+  latestUpdateInfo = data;
+
+  if (data.isLatest) {
+    if (iconEl) iconEl.textContent = '✅';
+    if (headingEl) headingEl.textContent = `AutoBackup is Up to Date (v${data.currentVersion})`;
+    if (descEl) descEl.textContent = 'You are currently running the latest stable release of AutoBackup.';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Check Again';
+    }
+  } else {
+    if (iconEl) iconEl.textContent = '🚀';
+    if (headingEl) headingEl.textContent = `New Version Available: v${data.latestVersion}`;
+    if (descEl) descEl.textContent = `A newer release (v${data.latestVersion}) is available. Current version: v${data.currentVersion}`;
+    if (notesBox && data.releaseNotes) {
+      notesBox.style.display = 'block';
+      notesBox.innerHTML = `<strong>Release Notes:</strong><br><pre style="white-space: pre-wrap; font-family: inherit; margin-top: 0.4rem;">${escapeHtml(data.releaseNotes)}</pre>`;
+    }
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Download Update';
+    }
+  }
+}
+
+function handleDesktopUpdateStatus(data) {
+  const iconEl = document.getElementById('update-icon-indicator');
+  const headingEl = document.getElementById('update-heading-text');
+  const descEl = document.getElementById('update-description-text');
+  const progressBar = document.getElementById('update-progress-container');
+  const progressInner = document.getElementById('update-progress-bar');
+  const percentText = document.getElementById('update-percent-text');
+  const actionBtn = document.getElementById('btn-update-action');
+
+  if (data.status === 'checking') {
+    if (headingEl) headingEl.textContent = 'Checking for Updates...';
+  } else if (data.status === 'available') {
+    if (iconEl) iconEl.textContent = '🚀';
+    if (headingEl) headingEl.textContent = `New Update v${data.version || ''} Found!`;
+    if (descEl) descEl.textContent = 'Click below to download and install automatically.';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = '📥 Download Now';
+    }
+  } else if (data.status === 'not-available') {
+    if (iconEl) iconEl.textContent = '✅';
+    if (headingEl) headingEl.textContent = 'AutoBackup is Up to Date';
+    if (descEl) descEl.textContent = 'You are running the latest version.';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Check Again';
+    }
+  } else if (data.status === 'downloading') {
+    if (progressBar) progressBar.style.display = 'block';
+    if (progressInner) progressInner.style.width = `${data.percent || 0}%`;
+    if (percentText) percentText.textContent = `${data.percent || 0}%`;
+    if (descEl) descEl.textContent = `Downloading update... (${data.percent || 0}%)`;
+    if (actionBtn) {
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Downloading...';
+    }
+  } else if (data.status === 'downloaded') {
+    if (iconEl) iconEl.textContent = '🎉';
+    if (headingEl) headingEl.textContent = 'Update Ready to Install!';
+    if (descEl) descEl.textContent = 'The new version has been downloaded. Restart AutoBackup to apply.';
+    if (progressBar) progressBar.style.display = 'none';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = '🔄 Restart & Install Now';
+    }
+  } else if (data.status === 'error') {
+    if (iconEl) iconEl.textContent = '⚠️';
+    if (headingEl) headingEl.textContent = 'Update Check Notice';
+    if (descEl) descEl.textContent = data.message || 'Could not verify update status.';
+    if (actionBtn) {
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Retry';
+    }
+  }
+}
+
+function handleUpdateActionClick() {
+  const actionBtn = document.getElementById('btn-update-action');
+  const btnText = actionBtn ? actionBtn.textContent : '';
+
+  if (btnText.includes('Restart')) {
+    if (window.desktopApi && typeof window.desktopApi.installUpdateNow === 'function') {
+      window.desktopApi.installUpdateNow();
+    }
+  } else if (btnText.includes('Download Now')) {
+    if (window.desktopApi && typeof window.desktopApi.startDownloadUpdate === 'function') {
+      actionBtn.disabled = true;
+      actionBtn.textContent = 'Starting Download...';
+      window.desktopApi.startDownloadUpdate();
+    }
+  } else if (btnText.includes('Download Update') && latestUpdateInfo && latestUpdateInfo.releaseUrl) {
+    window.open(latestUpdateInfo.releaseUrl, '_blank');
+  } else {
+    checkAppUpdates();
+  }
+}
+
+function openBulkRemoveModal() {
+  const modal = document.getElementById('modal-bulk-remove-sources');
+  const tagSelect = document.getElementById('bulk-remove-tag-select');
+  const modeSelect = document.getElementById('bulk-remove-mode');
+
+  if (modeSelect) modeSelect.value = 'all';
+  onBulkRemoveModeChange('all');
+
+  // Populate unique tags
+  if (tagSelect) {
+    const tagSet = new Set();
+    detectedSources.forEach(s => {
+      if (s.tags) {
+        s.tags.split(',').map(t => t.trim()).filter(Boolean).forEach(t => tagSet.add(t));
+      }
+    });
+
+    if (tagSet.size === 0) {
+      tagSelect.innerHTML = '<option value="">No tags defined yet</option>';
+    } else {
+      tagSelect.innerHTML = Array.from(tagSet).map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    }
+  }
+
+  modal?.classList.add('active');
+}
+
+function onBulkRemoveModeChange(mode) {
+  const tagGroup = document.getElementById('bulk-remove-tag-group');
+  if (tagGroup) {
+    tagGroup.classList.toggle('hidden', mode !== 'tag');
+  }
+}
+
+async function executeBulkRemoveSources() {
+  const mode = document.getElementById('bulk-remove-mode')?.value || 'all';
+  const tag = document.getElementById('bulk-remove-tag-select')?.value;
+
+  let confirmMsg = 'Are you sure you want to remove ALL monitored source folders from AutoBackup?';
+  if (mode === 'tag') {
+    if (!tag) {
+      alert('Please select a tag to remove.');
+      return;
+    }
+    confirmMsg = `Are you sure you want to remove all monitored source folders tagged with "${tag}"?`;
+  }
+
+  if (!confirm(confirmMsg)) return;
+
+  const btn = document.getElementById('btn-confirm-bulk-remove');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Removing...';
+  }
+
+  try {
+    const res = await fetch('/api/sources/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, tag })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    alert(`✅ ${data.message}`);
+    document.getElementById('modal-bulk-remove-sources')?.classList.remove('active');
+    await fetchSources();
+  } catch (err) {
+    alert('Failed bulk removal: ' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Confirm Bulk Removal';
+    }
+  }
+}
+
+async function publishReleaseToDiscord() {
+  const btn = document.getElementById('btn-publish-discord-release');
+  const statusEl = document.getElementById('discord-publish-status');
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Publishing to Discord...';
+  }
+  if (statusEl) statusEl.textContent = '';
+
+  try {
+    const res = await fetch('/api/settings/publish-discord-release', { method: 'POST' });
+    const data = await res.json();
+
+    if (!res.ok || data.error) throw new Error(data.error || 'Failed to publish release');
+
+    if (statusEl) statusEl.textContent = '✅ Published to Discord successfully!';
+    appendConsoleLine('[Discord] ✅ Published release card with .EXE download & Docker command to Discord!', 'system');
+  } catch (err) {
+    alert('Failed to publish to Discord: ' + err.message);
+    if (statusEl) statusEl.textContent = '❌ ' + err.message;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '📢 Publish Release to Discord Webhook';
+    }
+  }
+}
+
+function handleNetworkStatusChange(isOnline, message) {
+  const banner = document.getElementById('network-offline-banner');
+  if (banner) {
+    banner.classList.toggle('hidden', isOnline);
+    if (!isOnline && message) {
+      const textEl = banner.querySelector('span:last-child');
+      if (textEl) textEl.textContent = message;
+    }
+  }
+
+  if (isOnline) {
+    appendConsoleLine(`[Network] 📶 Connection active: ${message || 'Online'}. Auto-resuming paused backup tasks...`, 'system');
+    fetchTasks();
+  } else {
+    appendConsoleLine(`[Network] ⚠️ Connection dropped: ${message || 'Offline'}. Active tasks auto-paused safely.`, 'error');
+    fetchTasks();
+  }
+}
+
+async function saveEncryptionSettings() {
+  const enabled = document.getElementById('setting-encryption-enabled')?.checked;
+  const password = document.getElementById('setting-encryption-password')?.value.trim() || '';
+  const salt = document.getElementById('setting-encryption-salt')?.value.trim() || '';
+  const feedback = document.getElementById('encryption-feedback');
+
+  if (enabled && !password) {
+    if (feedback) {
+      feedback.style.color = '#fb7185';
+      feedback.textContent = '❌ Passphrase is required when encryption is enabled.';
+    }
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        encryption_enabled: enabled ? 'true' : 'false',
+        encryption_password: password,
+        encryption_salt: salt
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (feedback) {
+        feedback.style.color = '#34d399';
+        feedback.textContent = '✅ Encryption settings saved successfully!';
+        setTimeout(() => { feedback.textContent = ''; }, 4000);
+      }
+      const encBadge = document.getElementById('encryption-status-badge');
+      if (encBadge) {
+        encBadge.textContent = enabled ? 'Active' : 'Optional';
+        encBadge.className = enabled ? 'badge badge-success' : 'badge badge-secondary';
+      }
+      appendConsoleLine(`[Security] 🔐 Client-side encryption ${enabled ? 'activated' : 'disabled'}.`, 'system');
+    } else {
+      if (feedback) {
+        feedback.style.color = '#fb7185';
+        feedback.textContent = '❌ Error saving: ' + (data.error || 'Unknown error');
+      }
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.style.color = '#fb7185';
+      feedback.textContent = '❌ Failed to save: ' + err.message;
+    }
+  }
+}
+
+function updateContextMenuBadge(isRegistered) {
+  const badge = document.getElementById('context-menu-badge');
+  if (!badge) return;
+  if (isRegistered) {
+    badge.textContent = 'Active in Explorer';
+    badge.className = 'badge badge-success';
+  } else {
+    badge.textContent = 'Not Registered';
+    badge.className = 'badge badge-secondary';
+  }
+}
+
+// ─── Failed Files Management Modal ──────────────────────────────────────────
+
+async function openFailedFilesModal(taskId) {
+  const modal = document.getElementById('modal-failed-files');
+  if (!modal) return;
+
+  const idInput = document.getElementById('failed-files-task-id');
+  const titleLabel = document.getElementById('failed-files-task-name-label');
+  const countBadge = document.getElementById('failed-files-count-badge');
+  const listBody = document.getElementById('failed-files-list-body');
+  const retryBtn = document.getElementById('btn-retry-failed-files');
+  const copyBtn = document.getElementById('btn-copy-failed-files');
+
+  if (idInput) idInput.value = taskId;
+
+  const task = currentTasks.find(t => String(t.id) === String(taskId));
+  const taskName = task ? task.name : `Task #${taskId}`;
+  if (titleLabel) titleLabel.textContent = `Task: ${taskName}`;
+  if (countBadge) countBadge.textContent = '...';
+
+  if (listBody) {
+    listBody.innerHTML = '<tr><td colspan="3" class="text-center" style="padding:1.5rem; color:var(--text-muted);">⏳ Loading failed files list...</td></tr>';
+  }
+
+  modal.classList.add('active');
+
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/failed-files`);
+    const files = await res.json();
+
+    if (!Array.isArray(files) || files.length === 0) {
+      if (countBadge) countBadge.textContent = '0';
+      if (listBody) {
+        listBody.innerHTML = '<tr><td colspan="3" class="text-center" style="padding:1.5rem; color:#34d399;">✅ No pending failed or skipped files found for this task.</td></tr>';
+      }
+      if (retryBtn) retryBtn.disabled = true;
+      if (copyBtn) copyBtn.disabled = true;
+      return;
+    }
+
+    if (countBadge) countBadge.textContent = files.length;
+    if (retryBtn) retryBtn.disabled = false;
+    if (copyBtn) copyBtn.disabled = false;
+
+    if (listBody) {
+      listBody.innerHTML = files.map(item => `
+        <tr id="failed-file-row-${item.id}">
+          <td style="padding:0.5rem 0.75rem; font-family:monospace; font-size:0.75rem; word-break:break-all; max-width:280px;" title="${escapeHtml(item.file_path)}">
+            ${escapeHtml(item.file_path)}
+          </td>
+          <td style="padding:0.5rem 0.75rem; color:#fca5a5; font-size:0.75rem;">
+            ${escapeHtml(item.error_reason || 'Unknown failure')}
+          </td>
+          <td style="padding:0.5rem 0.75rem; text-align:right; white-space:nowrap;">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="dismissSingleFailedFile('${item.id}', '${taskId}')" title="Dismiss this file record">
+              ✕
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
+  } catch (err) {
+    if (listBody) {
+      listBody.innerHTML = `<tr><td colspan="3" class="text-center" style="padding:1.5rem; color:#fb7185;">❌ Failed to load failed files: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+}
+
+async function retryFailedFilesNow() {
+  const taskId = document.getElementById('failed-files-task-id')?.value;
+  if (!taskId) return;
+
+  const retryBtn = document.getElementById('btn-retry-failed-files');
+  if (retryBtn) {
+    retryBtn.disabled = true;
+    retryBtn.innerHTML = '⏳ Retrying...';
+  }
+
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/retry-failed`, { method: 'POST' });
+    const data = await res.json();
+
+    if (data.success) {
+      appendConsoleLine(`[Retry] 🔄 Initiated targeted retry of ${data.retriedFilesCount} skipped file(s) for task #${taskId}...`, 'system');
+      document.getElementById('modal-failed-files')?.classList.remove('active');
+      fetchTasks();
+    } else {
+      alert('Could not start retry: ' + (data.error || 'Unknown error'));
+      if (retryBtn) {
+        retryBtn.disabled = false;
+        retryBtn.innerHTML = '🔄 Retry Failed Files Now';
+      }
+    }
+  } catch (err) {
+    alert('Failed to trigger retry: ' + err.message);
+    if (retryBtn) {
+      retryBtn.disabled = false;
+      retryBtn.innerHTML = '🔄 Retry Failed Files Now';
+    }
+  }
+}
+
+async function dismissAllFailedFiles() {
+  const taskId = document.getElementById('failed-files-task-id')?.value;
+  if (!taskId) return;
+
+  if (!confirm('Are you sure you want to dismiss all pending failed file records for this task?')) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/dismiss-failed`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      appendConsoleLine(`[Dismiss] Cleared failed file notifications for task #${taskId}.`, 'system');
+      document.getElementById('modal-failed-files')?.classList.remove('active');
+      fetchTasks();
+    } else {
+      alert('Error dismissing: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    alert('Failed to dismiss failed files: ' + err.message);
+  }
+}
+
+async function dismissSingleFailedFile(failedId, taskId) {
+  try {
+    const res = await fetch(`/api/failed-files/${failedId}/dismiss`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      const row = document.getElementById(`failed-file-row-${failedId}`);
+      if (row) row.remove();
+
+      const tbody = document.getElementById('failed-files-list-body');
+      const countBadge = document.getElementById('failed-files-count-badge');
+      const remainingRows = tbody ? tbody.querySelectorAll('tr').length : 0;
+      if (countBadge) countBadge.textContent = remainingRows;
+
+      if (remainingRows === 0) {
+        if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-center" style="padding:1.5rem; color:#34d399;">✅ All failed files dismissed.</td></tr>';
+        document.getElementById('btn-retry-failed-files')?.setAttribute('disabled', 'true');
+        document.getElementById('btn-copy-failed-files')?.setAttribute('disabled', 'true');
+        fetchTasks();
+      }
+    }
+  } catch (err) {
+    alert('Failed to dismiss file: ' + err.message);
+  }
+}
+
+function copyFailedFilesList() {
+  const tbody = document.getElementById('failed-files-list-body');
+  if (!tbody) return;
+
+  const rows = tbody.querySelectorAll('tr');
+  const paths = [];
+  rows.forEach(r => {
+    const cell = r.querySelector('td');
+    if (cell && cell.textContent.trim()) {
+      paths.push(cell.textContent.trim());
+    }
+  });
+
+  if (paths.length === 0) return;
+
+  navigator.clipboard.writeText(paths.join('\n')).then(() => {
+    const btn = document.getElementById('btn-copy-failed-files');
+    if (btn) {
+      const orig = btn.innerHTML;
+      btn.innerHTML = '✅ Copied!';
+      setTimeout(() => { btn.innerHTML = orig; }, 2000);
+    }
+  }).catch(() => {
+    alert('Failed to copy to clipboard.');
+  });
+}
+

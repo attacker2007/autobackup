@@ -43,15 +43,23 @@
     "node-cron": "^3.0.3",
     "sqlite3": "^5.1.7",
     "uuid": "^9.0.1",
-    "ws": "^8.17.0"
+    "ws": "^8.17.0",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^44.1.1",
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.autobackup.hub",
-    "productName": "AutoBackup Hub",
+    "appId": "com.autobackup.app",
+    "productName": "AutoBackup",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "attacker2007",
+        "repo": "autobackup"
+      }
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -74,7 +82,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "AutoBackup Hub"
+      "shortcutName": "AutoBackup"
     },
     "extraResources": [
       {

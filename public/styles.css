@@ -1,6 +1,6 @@
 /* ==========================================================================
-   AutoBackup Hub — Premium Modern UI Design System
-   Sleek Obsidian & Cyber-Glass Aesthetic (v2.8.2)
+   AutoBackup — Premium Modern UI Design System
+   Sleek Obsidian & Precision Glass Aesthetic (v2.8.4)
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -800,7 +800,15 @@ body {
 .console-line.normal { color: #cbd5e1; }
 .console-line.system { color: #38bdf8; }
 .console-line.error { color: #fb7185; }
+.console-line.warning { color: #fbbf24; }
 .console-line.progress { color: #facc15; }
+
+.status-badge-partial,
+.status-partial {
+  background: rgba(245, 158, 11, 0.15) !important;
+  color: #fbbf24 !important;
+  border: 1px solid rgba(245, 158, 11, 0.35) !important;
+}
 
 /* History Table */
 .table-wrapper {
@@ -1308,3 +1316,266 @@ input[type="checkbox"] {
 .cb-size { font-size: 0.72rem; color: var(--text-dim); flex-shrink: 0; }
 
 .hidden { display: none !important; }
+
+/* ==========================================================================
+   NETWORK RESILIENCE WATCHDOG BANNER
+   ========================================================================== */
+.network-offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 10000;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.95), rgba(185, 28, 28, 0.95));
+  color: #ffffff;
+  padding: 0.65rem 1.25rem;
+  box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  animation: slideDownBanner 0.3s ease-out;
+}
+
+.network-offline-banner.online-recovered {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.95), rgba(16, 185, 129, 0.95));
+  box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
+}
+
+.network-banner-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-align: center;
+}
+
+.network-banner-icon {
+  font-size: 1.15rem;
+  animation: pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes slideDownBanner {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ==========================================================================
+   SOURCE TAGGING SYSTEM & FILTER PILLS
+   ========================================================================== */
+.tag-pills-bar {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tag-pill {
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 0.22rem 0.65rem;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.18s ease;
+  user-select: none;
+}
+
+.tag-pill:hover {
+  background: rgba(0, 242, 254, 0.12);
+  color: var(--accent-cyan);
+  border-color: rgba(0, 242, 254, 0.35);
+}
+
+.tag-pill.active {
+  background: linear-gradient(135deg, rgba(0, 242, 254, 0.25), rgba(59, 130, 246, 0.25));
+  color: #38bdf8;
+  border-color: #38bdf8;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+}
+
+.source-tag-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.12rem 0.45rem;
+  border-radius: 12px;
+  background: rgba(139, 92, 246, 0.15);
+  color: #c4b5fd;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  margin-left: 0.35rem;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* Partial Task Checkbox List Items */
+.partial-source-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.partial-source-item:hover {
+  background: rgba(0, 242, 254, 0.06);
+  border-color: rgba(0, 242, 254, 0.2);
+}
+
+.partial-source-item input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: #00f2fe;
+  width: 16px;
+  height: 16px;
+}
+
+.partial-source-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  transition: all 0.2s ease;
+}
+.partial-source-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(0, 242, 254, 0.25);
+}
+.partial-subitems-container {
+  margin-top: 0.45rem;
+  padding: 0.4rem 0.6rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  border-left: 2px solid var(--accent-cyan);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.partial-subitem-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.partial-subitem-row:hover {
+  color: #fff;
+}
+.btn-toggle-subitems {
+  background: transparent;
+  border: 1px solid rgba(0, 242, 254, 0.25);
+  color: var(--accent-cyan);
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+.btn-toggle-subitems:hover {
+  background: rgba(0, 242, 254, 0.15);
+}
+
+/* Status Badges for Pause & Resume */
+.status-badge-paused {
+  background: rgba(234, 179, 8, 0.15);
+  color: #fde047;
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.status-badge-network-paused {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* ==========================================================================
+   MOBILE (iOS & ANDROID) RESPONSIVE OPTIMIZATIONS
+   ========================================================================== */
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0.75rem 1rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    justify-content: space-between;
+  }
+
+  .header-actions .btn {
+    flex: 1 1 calc(50% - 0.4rem);
+    min-height: 40px;
+    font-size: 0.8rem;
+    justify-content: center;
+  }
+
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.6rem;
+  }
+
+  .content-split {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card {
+    width: 95vw !important;
+    max-width: 95vw !important;
+    max-height: 90vh !important;
+    margin: 1rem auto;
+    border-radius: 12px;
+  }
+
+  .data-table th, .data-table td {
+    padding: 0.5rem;
+    font-size: 0.74rem;
+  }
+
+  .sources-filter-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  #source-search-filter {
+    width: 100% !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-title {
+    font-size: 1.2rem;
+  }
+
+  .header-actions .btn {
+    flex: 1 1 100%;
+  }
+}
+

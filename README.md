@@ -1,4 +1,4 @@
-# AutoBackup Hub 🚀
+# AutoBackup 🛡️
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
@@ -6,13 +6,13 @@
 [![Rclone Engine](https://img.shields.io/badge/Engine-Rclone-orange?logo=databricks&logoColor=white)](https://rclone.org)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green?logo=node.js&logoColor=white)](https://nodejs.org)
 
-**AutoBackup Hub** is a self-hosted, containerized multi-cloud backup and file synchronization manager with an interactive web dashboard. Powered by the high-performance **Rclone** engine, it allows you to automatically route, schedule, sync, and transfer files from your local machines (Windows, macOS, Linux) to cloud storage providers including **Google Drive, Microsoft OneDrive, Dropbox, pCloud, TeraBox, Box, Mega, and Amazon S3 / S3-compatible storage**.
+**AutoBackup** is a professional, self-hosted multi-cloud backup and file synchronization manager with native Windows desktop app support and an interactive web dashboard. Powered by the high-performance **Rclone** engine, it allows you to automatically route, schedule, sync, and transfer files from your local machines (Windows, macOS, Linux) to cloud storage providers including **Google Drive, Microsoft OneDrive, Dropbox, pCloud, TeraBox, Box, Mega, and Amazon S3 / S3-compatible storage**.
 
 ---
 
 ## ⚡ Quick Run (Pre-built Image)
 
-You can launch AutoBackup Hub directly using the pre-built Docker image from GitHub Container Registry:
+You can launch AutoBackup directly using the pre-built Docker image from GitHub Container Registry:
 
 ```bash
 docker run -d \
@@ -35,7 +35,7 @@ docker run -d \
   - [2. Configure `docker-compose.yml`](#2-configure-docker-composeyml)
   - [3. Launch the Container](#3-launch-the-container)
 - [🔧 In-Depth: Rclone Integration & Usage Guide](#-in-depth-rclone-integration--usage-guide)
-  - [How AutoBackup Hub Uses Rclone](#how-autobackup-hub-uses-rclone)
+  - [How AutoBackup Uses Rclone](#how-autobackup-uses-rclone)
   - [Installing Rclone CLI on Your Host Machine](#installing-rclone-cli-on-your-host-machine)
   - [OAuth Token Generation via `rclone authorize`](#oauth-token-generation-via-rclone-authorize)
   - [Importing an Existing `rclone.conf`](#importing-an-existing-rcloneconf)
@@ -169,9 +169,9 @@ Access the web dashboard in your browser:
 
 ## 🔧 In-Depth: Rclone Integration & Usage Guide
 
-[Rclone](https://rclone.org) ("rsync for cloud storage") is the engine powering all data transfers, directory listings, quotas, and integrity checks in **AutoBackup Hub**.
+[Rclone](https://rclone.org) ("rsync for cloud storage") is the engine powering all data transfers, directory listings, quotas, and integrity checks in **AutoBackup**.
 
-### How AutoBackup Hub Uses Rclone
+### How AutoBackup Uses Rclone
 
 1. **Embedded CLI Execution**: The Docker container includes the official Rclone binary.
 2. **Centralized Configuration**: All configured cloud remotes are stored in standard INI format inside `/config/rclone.conf` (persisted on your host under `./config/rclone.conf`).
@@ -232,7 +232,7 @@ rclone authorize "box"
    ```json
    {"access_token":"ya29.a0AfH6SM...","token_type":"Bearer","refresh_token":"1//04...","expiry":"2026-08-28T02:00:00Z"}
    ```
-4. Paste this entire JSON string into the **Access Token / Refresh Token** box in AutoBackup Hub when adding a remote.
+4. Paste this entire JSON string into the **Access Token / Refresh Token** box in AutoBackup when adding a remote.
 
 ---
 
@@ -247,13 +247,13 @@ If you already use Rclone on your computer, you do not need to reconfigure your 
    ```bash
    cp ~/.config/rclone/rclone.conf ./config/rclone.conf
    ```
-3. Or in the AutoBackup Hub UI, click **Manage Remotes** > **Import Raw Config** and paste the text.
+3. Or in the AutoBackup UI, click **Manage Remotes** > **Import Raw Config** and paste the text.
 
 ---
 
 ### Transfer Flags & Performance Optimization
 
-AutoBackup Hub dynamically applies optimal Rclone parameters per task:
+AutoBackup dynamically applies optimal Rclone parameters per task:
 
 | Feature | Rclone Parameter | Description |
 | :--- | :--- | :--- |
@@ -289,10 +289,10 @@ For maximum privacy, you can configure an **encrypted remote** (`crypt`) layered
 ```bash
 rclone authorize "drive" --auth-no-open-browser
 ```
-Or use the copy command button directly generated in the AutoBackup Hub UI.
+Or use the copy command button directly generated in the AutoBackup UI.
 
 #### Q: Rate limiting errors (HTTP 429 / Google Drive 750GB/day quota)
-**Fix**: AutoBackup Hub automatically retries with exponential backoff. You can also configure a bandwidth limit (e.g. `8M`) on high-volume backup tasks to stay well within daily API limits.
+**Fix**: AutoBackup automatically retries with exponential backoff. You can also configure a bandwidth limit (e.g. `8M`) on high-volume backup tasks to stay well within daily API limits.
 
 #### Q: Will tokens expire or require re-login?
 **No**: Rclone automatically refreshes OAuth2 tokens in the background before they expire, writing the updated token back to `./config/rclone.conf`.
@@ -314,7 +314,7 @@ Or use the copy command button directly generated in the AutoBackup Hub UI.
 ### Microsoft OneDrive
 1. Go to **Manage Remotes** > **New Remote** > Select **OneDrive**.
 2. Run `rclone authorize "onedrive"`.
-3. Grant access and paste the JSON token into AutoBackup Hub.
+3. Grant access and paste the JSON token into AutoBackup.
 
 ### Dropbox
 1. Select **Dropbox** under **Manage Remotes**.
@@ -380,7 +380,7 @@ Result on Local  -> [ ] (Local files deleted after successful transfer)
 
 - **Mount Read-Only (`:ro`)**: Protect your original laptop files from accidental deletion by appending `:ro` to volume mounts in `docker-compose.yml`.
 - **Exclude Sensitive Files**: Keep your credentials and database safe. Never commit `./config/rclone.conf` or `./config/autobackup.db` to public Git repositories (already configured in `.gitignore`).
-- **Dashboard PIN Protection**: Enable PIN protection in the web UI when hosting AutoBackup Hub on a shared local network.
+- **Dashboard PIN Protection**: Enable PIN protection in the web UI when hosting AutoBackup on a shared local network.
 
 ---
 

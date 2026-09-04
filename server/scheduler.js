@@ -2,7 +2,9 @@ const cron = require('node-cron');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 const db = require('./db');
-const { runBackupTask } = require('./rclone');
+const { runBackupTask, pauseBackupTask, unpauseTask, isTaskPaused, cancelBackupTask, isTaskCancelled, clearTaskCancelled } = require('./rclone');
+const networkWatchdog = require('./network-watchdog');
+const fileWatcher = require('./file-watcher');
 
 /**
  * Get configured device node name or default to hostname
@@ -143,6 +145,7 @@ class TaskScheduler {
   constructor() {
     this.cronJobs = new Map(); // taskId -> cronTask
     this.runningTasks = new Set(); // taskId set
+    this.pausedTaskStates = new Map(); // taskId -> { pausedAt, reason }
     this.wsBroadcast = null;
     this.checkInterval = null;
   }
@@ -184,6 +187,43 @@ class TaskScheduler {
           this.checkMissedCatchupTasks();
         }, 60000);
       }
+
+      // Wire Real-time File Watcher
+      fileWatcher.setTriggerCallback((taskId, details) => {
+        console.log(`[Scheduler] ⚡ Real-time file change triggered backup for task ${taskId}:`, details);
+        this.executeTask(taskId, false, { triggerReason: 'realtime_change' });
+      });
+
+      fileWatcher.setBroadcastCallback((payload) => {
+        this.broadcast(payload.type, payload.data);
+      });
+
+      fileWatcher.syncAll(tasks);
+
+      // Wire Network Watchdog: auto-pause on disconnect and auto-resume on reconnect
+      networkWatchdog.onOffline(() => {
+        console.log('[Scheduler] ⚠️ Network offline detected. Pausing any active backup tasks...');
+        this.broadcast('network_status', { online: false, message: 'Internet disconnected. Backups automatically paused.' });
+        for (const taskId of Array.from(this.runningTasks)) {
+          this.pauseTask(taskId, 'network');
+        }
+      });
+
+      networkWatchdog.onOnline(async () => {
+        console.log('[Scheduler] 🌐 Network restored. Resuming any network-paused tasks...');
+        this.broadcast('network_status', { online: true, message: 'Internet connection restored. Resuming backups...' });
+        try {
+          const netPausedTasks = await db.all("SELECT id FROM tasks WHERE last_status = 'paused_network'");
+          for (const t of netPausedTasks) {
+            console.log(`[Scheduler] Auto-resuming task ${t.id} after reconnection...`);
+            this.resumeTask(t.id);
+          }
+        } catch (e) {
+          console.error('[Scheduler] Error auto-resuming tasks on reconnect:', e);
+        }
+      });
+
+      networkWatchdog.start();
 
       // Schedule automated monthly Discord summary report (at 9:00 AM on 1st of every month)
       cron.schedule('0 9 1 * *', () => {
@@ -308,6 +348,12 @@ class TaskScheduler {
 
       this.cronJobs.set(task.id, job);
       console.log(`[Scheduler] Task "${task.name}" scheduled with cron pattern "${task.cron_schedule}" [Priority: ${(task.priority || 'normal').toUpperCase()}] (Next run: ${nextRun})`);
+
+      if (task.realtime_watch && task.enabled) {
+        fileWatcher.watchTask(task);
+      } else {
+        fileWatcher.unwatchTask(task.id);
+      }
       return true;
     } catch (err) {
       console.error(`[Scheduler] Failed to schedule task "${task.name}":`, err.message);
@@ -325,19 +371,48 @@ class TaskScheduler {
       this.cronJobs.delete(taskId);
       console.log(`[Scheduler] Task ${taskId} unscheduled.`);
     }
+    fileWatcher.unwatchTask(taskId);
     db.run('UPDATE tasks SET next_run = NULL WHERE id = ?', [taskId]);
   }
 
   /**
-   * Execute a task immediately (manual trigger, cron trigger, or dry-run)
+   * Pause an actively running backup task
    */
-  async executeTask(taskId, isDryRun = false) {
+  async pauseTask(taskId, reason = 'user') {
+    const status = reason === 'network' ? 'paused_network' : 'paused';
+    pauseBackupTask(taskId);
+    this.pausedTaskStates.set(taskId, { pausedAt: new Date().toISOString(), reason });
+    await db.run('UPDATE tasks SET last_status = ? WHERE id = ?', [status, taskId]);
+    this.runningTasks.delete(taskId);
+    this.broadcast('task_paused', { taskId, status, reason });
+    console.log(`[Scheduler] Task ${taskId} paused (Reason: ${reason}).`);
+    return { success: true, status, reason };
+  }
+
+  /**
+   * Resume a paused backup task
+   */
+  async resumeTask(taskId) {
+    unpauseTask(taskId);
+    this.pausedTaskStates.delete(taskId);
+    await db.run('UPDATE tasks SET last_status = ? WHERE id = ?', ['resuming', taskId]);
+    this.broadcast('task_resumed', { taskId });
+    console.log(`[Scheduler] Task ${taskId} resumed. Re-launching execution...`);
+    return this.executeTask(taskId);
+  }
+
+  /**
+   * Execute a task immediately (manual trigger, cron trigger, dry-run, or partial sources)
+   */
+  async executeTask(taskId, isDryRun = false, options = {}) {
     if (this.runningTasks.has(taskId)) {
       console.log(`[Scheduler] Task ${taskId} is already running. Skipping trigger.`);
       this.broadcast('task_skipped', { taskId, reason: 'Already running' });
       return { running: true, message: 'Task is already running' };
     }
 
+    unpauseTask(taskId);
+    clearTaskCancelled(taskId);
     const task = await db.get('SELECT * FROM tasks WHERE id = ?', [taskId]);
     if (!task) {
       console.error(`[Scheduler] Task ${taskId} not found in database.`);
@@ -359,10 +434,14 @@ class TaskScheduler {
       taskName: task.name,
       logId,
       startTime,
-      isDryRun
+      isDryRun,
+      selectedSources: options.selectedSources || null
     });
 
     console.log(`[Scheduler] Starting backup job for "${task.name}" (${task.id})...${isDryRun ? ' [DRY RUN]' : ''}`);
+
+    let logBuffer = '';
+    let logThrottleTimer = null;
 
     const result = await runBackupTask(
       task,
@@ -374,18 +453,138 @@ class TaskScheduler {
         });
       },
       (logLine) => {
-        this.broadcast('task_log', {
-          taskId,
-          logId,
-          logLine
-        });
+        logBuffer += logLine;
+        if (!logThrottleTimer) {
+          logThrottleTimer = setTimeout(() => {
+            if (logBuffer) {
+              this.broadcast('task_log', {
+                taskId,
+                logId,
+                logLine: logBuffer
+              });
+              logBuffer = '';
+            }
+            logThrottleTimer = null;
+          }, 250);
+        }
       },
-      { isDryRun }
+      {
+        isDryRun,
+        selectedSources: options.selectedSources,
+        subPaths: options.subPaths,
+        onSlowdown: (slowInfo) => {
+          this.broadcast('task_slowdown', {
+            taskId,
+            speed: slowInfo.speed,
+            message: 'Adaptive speed throttle engaged due to network slowdown.'
+          });
+        }
+      }
     );
 
+    if (logThrottleTimer) {
+      clearTimeout(logThrottleTimer);
+      if (logBuffer) {
+        this.broadcast('task_log', { taskId, logId, logLine: logBuffer });
+        logBuffer = '';
+      }
+    }
+
     const endTime = new Date().toISOString();
-    const finalStatus = result.success ? (isDryRun ? 'dry_run' : 'success') : 'failed';
+
+    // Check if task ended because it was paused
+    if (result.isPaused || isTaskPaused(taskId)) {
+      const pausedState = this.pausedTaskStates.get(taskId);
+      const finalStatus = (pausedState && pausedState.reason === 'network') ? 'paused_network' : 'paused';
+      await db.run('UPDATE tasks SET last_status = ? WHERE id = ?', [finalStatus, taskId]);
+      this.runningTasks.delete(taskId);
+      this.broadcast('task_paused', {
+        taskId,
+        taskName: task.name,
+        logId,
+        status: finalStatus,
+        bytesTransferred: result.bytesTransferred
+      });
+      return { paused: true, status: finalStatus, logId };
+    }
+
+    // Check if task ended because it was stopped / cancelled by user
+    if (result.isStopped || isTaskCancelled(taskId) || !this.runningTasks.has(taskId)) {
+      clearTaskCancelled(taskId);
+      this.runningTasks.delete(taskId);
+      const nextRun = calculateNextRun(task.cron_schedule);
+      await db.run('UPDATE tasks SET last_status = ?, next_run = ? WHERE id = ?', ['stopped', nextRun, taskId]);
+
+      await db.run(
+        `INSERT INTO logs (id, task_id, task_name, start_time, end_time, status, bytes_transferred, files_transferred, output)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          logId,
+          task.id,
+          task.name,
+          startTime,
+          endTime,
+          'stopped',
+          result.bytesTransferred || '0 B',
+          result.filesTransferred || 0,
+          result.output || 'Task execution stopped by user.'
+        ]
+      );
+
+      this.broadcast('task_finished', {
+        taskId,
+        taskName: task.name,
+        logId,
+        status: 'stopped',
+        bytesTransferred: result.bytesTransferred || '0 B',
+        nextRun,
+        endTime,
+        isDryRun
+      });
+
+      console.log(`[Scheduler] Task "${task.name}" (${taskId}) cleanly stopped by user.`);
+      return { success: false, isStopped: true, status: 'stopped', logId, isDryRun };
+    }
+
+    const finalStatus = result.success ? (isDryRun ? 'dry_run' : (result.isPartial ? 'partial' : 'success')) : 'failed';
     const nextRun = calculateNextRun(task.cron_schedule);
+
+    // Persist failed/skipped files to database
+    if (result.failedFiles && result.failedFiles.length > 0) {
+      const { v4: uuidv4 } = require('uuid');
+      for (const item of result.failedFiles) {
+        try {
+          const failId = 'fail_' + uuidv4();
+          await db.run(
+            `INSERT INTO failed_files (id, task_id, task_name, log_id, file_path, error_reason, source_path, target_remote, target_path, status, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`,
+            [
+              failId,
+              task.id,
+              task.name,
+              logId,
+              item.filePath,
+              item.errorReason || 'Transfer error',
+              item.sourcePath || (Array.isArray(task.source_path) ? task.source_path[0] : task.source_path),
+              task.target_remote,
+              task.target_path || ''
+            ]
+          );
+        } catch (e) {}
+      }
+    } else if (result.success && !result.isPartial) {
+      // If task succeeded completely, mark any previous pending failures as resolved
+      try {
+        await db.run(
+          `UPDATE failed_files SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE task_id = ? AND status = 'pending'`,
+          [task.id]
+        );
+      } catch (e) {}
+    }
+
+    // Truncate raw output text to 50,000 chars max to prevent database bloat and corruption
+    const maxOutputLen = 50000;
+    const cleanOutput = result.output ? (result.output.length > maxOutputLen ? result.output.slice(-maxOutputLen) : result.output) : '';
 
     await db.run(
       `INSERT INTO logs (id, task_id, task_name, start_time, end_time, status, bytes_transferred, files_transferred, output)
@@ -399,9 +598,14 @@ class TaskScheduler {
         finalStatus,
         result.bytesTransferred || '0 B',
         result.filesTransferred || 0,
-        result.output
+        cleanOutput
       ]
     );
+
+    // Auto-prune old logs: keep only the latest 100 entries to prevent database bloat
+    try {
+      await db.run(`DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY start_time DESC LIMIT 100)`);
+    } catch (e) {}
 
     await db.run('UPDATE tasks SET last_status = ?, next_run = ? WHERE id = ?', [finalStatus, nextRun, taskId]);
 
@@ -412,6 +616,8 @@ class TaskScheduler {
       taskName: task.name,
       logId,
       status: finalStatus,
+      isPartial: !!result.isPartial,
+      failedFilesCount: (result.failedFiles || []).length,
       bytesTransferred: result.bytesTransferred,
       nextRun,
       endTime,
@@ -423,7 +629,7 @@ class TaskScheduler {
     // Trigger Phone & App Notifications (Discord, ntfy.sh, Telegram)
     await this.sendPhoneNotifications(task, result, logId, isDryRun);
 
-    return { success: result.success, logId, isDryRun };
+    return { success: result.success, isPartial: result.isPartial, logId, isDryRun };
   }
 
   /**
@@ -450,24 +656,29 @@ class TaskScheduler {
       const deviceName = await getDeviceName();
       const webhookUrl = setting.value.trim();
       const isSuccess = result.success;
-      const statusIcon = isSuccess ? '🟢' : '🔴';
-      const statusTitle = isSuccess ? '✅ Backup Succeeded' : '❌ Backup Failed';
+      const isPartial = !!result.isPartial;
+      const statusIcon = isPartial ? '🟡' : (isSuccess ? '🟢' : '🔴');
+      const statusTitle = isPartial
+        ? `⚠️ Backup Completed (${(result.failedFiles || []).length} skipped)`
+        : (isSuccess ? '✅ Backup Succeeded' : '❌ Backup Failed');
+      const statusText = isPartial ? 'COMPLETED WITH WARNINGS' : (isSuccess ? 'SUCCESS' : 'FAILED');
+      const statusColor = isPartial ? 0xf59e0b : (isSuccess ? 0x22c55e : 0xef4444);
       const bytesText = result.bytesTransferred ? ` (${result.bytesTransferred})` : '';
       const dryRunTag = isDryRun ? ' [Dry Run]' : '';
       const remoteTarget = `${task.target_remote}:${task.target_path || ''}`;
 
       const payload = {
-        username: `AutoBackup Hub (${deviceName})`,
+        username: `AutoBackup (${deviceName})`,
         avatar_url: 'https://cdn-icons-png.flaticon.com/512/4149/4149678.png',
-        content: `${statusIcon} **[${isSuccess ? 'SUCCESS' : 'FAILED'}]** \`[${deviceName}]\` ${task.name}${dryRunTag} ➔ \`${remoteTarget}\`${bytesText}`,
+        content: `${statusIcon} **[${statusText}]** \`[${deviceName}]\` ${task.name}${dryRunTag} ➔ \`${remoteTarget}\`${bytesText}`,
         embeds: [
           {
             title: `${statusTitle}: ${task.name}${dryRunTag}`,
             description: `Backup job execution summary on device **${deviceName}** for target **${remoteTarget}**.`,
-            color: isSuccess ? 0x22c55e : 0xef4444,
+            color: statusColor,
             fields: [
               { name: 'Device Node', value: `\`${deviceName}\``, inline: true },
-              { name: 'Status', value: isSuccess ? '`SUCCESS`' : '`FAILED`', inline: true },
+              { name: 'Status', value: `\`${statusText}\``, inline: true },
               { name: 'Transferred', value: `\`${result.bytesTransferred || '0 B'}\``, inline: true },
               { name: 'Priority', value: `\`${(task.priority || 'normal').toUpperCase()}\``, inline: true },
               { name: 'Destination Remote', value: `\`${remoteTarget}\``, inline: true },
@@ -592,7 +803,7 @@ class TaskScheduler {
       const chatId = chatIdRow.value.trim();
       const isSuccess = result.success;
 
-      const text = `*AutoBackup Hub Alert [${deviceName}]*\n\n` +
+      const text = `*AutoBackup Alert [${deviceName}]*\n\n` +
         `*Task:* ${task.name}${isDryRun ? ' (Dry Run)' : ''}\n` +
         `*Device:* \`${deviceName}\`\n` +
         `*Status:* ${isSuccess ? '✅ SUCCESS' : '❌ FAILED'}\n` +
@@ -660,24 +871,24 @@ class TaskScheduler {
       }
 
       const payload = {
-        username: 'AutoBackup Hub Reports',
+        username: 'AutoBackup Reports',
         avatar_url: 'https://cdn-icons-png.flaticon.com/512/4149/4149678.png',
-        content: `📊 **[MONTHLY REPORT]** AutoBackup Hub past 30 days: **${successRate}%** success rate across ${totalRuns} run(s)`,
+        content: `📊 **[MONTHLY REPORT]** AutoBackup past 30 days: **${successRate}%** success rate across ${totalRuns} run(s)`,
         embeds: [
           {
-            title: '📊 AutoBackup Hub - Monthly Executive Summary',
-            description: `Automated 30-day performance report for **AutoBackup Engine**. System running with **${successRate}%** operational reliability.`,
-            color: 0x00f2fe,
+            title: '📊 AutoBackup - Monthly Executive Summary',
+            description: `Automated 30-day performance report for **AutoBackup Backup Engine**. System running with **${successRate}%** operational reliability.`,
+            color: successRateNum >= 90 ? 0x22c55e : (successRateNum >= 75 ? 0xf59e0b : 0xef4444),
             fields: [
-              { name: 'Total Executions', value: `\`${totalRuns} run(s)\``, inline: true },
+              { name: 'Device Node', value: `\`${deviceName}\``, inline: true },
               { name: 'Success Rate', value: `\`${successRate}%\``, inline: true },
-              { name: 'Active Backup Tasks', value: `\`${activeTasksCount} configured\``, inline: true },
-              { name: 'Successful Runs', value: `\`✅ ${successRuns}\``, inline: true },
-              { name: 'Failed Runs', value: `\`❌ ${failedRuns}\``, inline: true },
-              { name: 'Connected Remotes', value: `\`☁️ ${remotesList.length} cloud(s)\``, inline: true },
-              { name: 'Cloud Storage Capacity Overview', value: storageBreakdownText || 'No active remote storage recorded.', inline: false }
+              { name: 'Active Scheduled Tasks', value: `\`${activeTasksCount}\``, inline: true },
+              { name: 'Total Executions', value: `\`${totalRuns}\``, inline: true },
+              { name: 'Successful Runs', value: `\`${successRuns}\``, inline: true },
+              { name: 'Failed Runs', value: `\`${failedRuns}\``, inline: true },
+              { name: 'Connected Storage Targets & Quotas', value: storageBreakdownText || 'No remotes configured', inline: false }
             ],
-            footer: { text: `AutoBackup Hub • Monthly Automation Report` },
+            footer: { text: `AutoBackup • Monthly Automation Report` },
             timestamp: new Date().toISOString()
           }
         ]
@@ -724,6 +935,82 @@ class TaskScheduler {
     });
 
     return { success: true, wasRunning, message: 'Task execution stopped' };
+  }
+
+  /**
+   * Publish Release and Docker deployment commands to Discord Webhook
+   */
+  async publishReleaseToDiscord({ version, notes, exeUrl, portableExeUrl, dockerCommand } = {}) {
+    try {
+      const setting = await db.get('SELECT value FROM settings WHERE key = ?', ['discord_webhook_url']);
+      if (!setting || !setting.value || !setting.value.trim().startsWith('http')) {
+        return { success: false, error: 'Discord Webhook URL is not configured in Settings.' };
+      }
+
+      const deviceName = await getDeviceName();
+      const webhookUrl = setting.value.trim();
+      const ver = version || '2.8.3';
+      const defaultExe = exeUrl || `https://github.com/attacker2007/autobackup/releases/download/v${ver}/AutoBackup.Hub.Setup.${ver}.exe`;
+      const defaultPortable = portableExeUrl || `https://github.com/attacker2007/autobackup/releases/download/v${ver}/AutoBackup.Hub.${ver}.exe`;
+      const defaultDocker = dockerCommand || `docker run -d --name autobackup -p 3000:3000 -v autobackup_config:/app/config -v /hostfs/c:/hostfs/C:ro ghcr.io/attacker2007/autobackup:v${ver}`;
+
+      const payload = {
+        username: `AutoBackup (${deviceName})`,
+        avatar_url: 'https://cdn-icons-png.flaticon.com/512/4149/4149678.png',
+        content: `🚀 **[NEW RELEASE]** AutoBackup **v${ver}** is now available! Standalone Windows Desktop App (.exe) and Docker Container released.`,
+        embeds: [
+          {
+            title: `📦 AutoBackup v${ver} Release Package`,
+            description: notes || `AutoBackup is upgraded with multi-device cloud linking, fault-tolerant continuation, pause/resume, partial folder runs, adaptive network throttling, and official Windows .exe installers.`,
+            color: 0x3b82f6,
+            fields: [
+              {
+                name: '💻 Windows Installer (.exe)',
+                value: `[Download AutoBackup Setup v${ver}.exe](${defaultExe})`,
+                inline: false
+              },
+              {
+                name: '⚡ Portable Windows Executable (.exe)',
+                value: `[Download Portable v${ver}.exe](${defaultPortable})`,
+                inline: false
+              },
+              {
+                name: '🐳 Docker Container Command (Run Locally)',
+                value: `\`\`\`bash\n${defaultDocker}\n\`\`\``,
+                inline: false
+              },
+              {
+                name: '📱 Mobile Access (iOS / Android Browser)',
+                value: `Open \`http://<your-ip>:3000\` on your mobile browser or use QR pairing to link your phone.`,
+                inline: false
+              },
+              {
+                name: '🐙 GitHub Repository & Releases',
+                value: `[GitHub Releases](https://github.com/attacker2007/autobackup/releases)`,
+                inline: false
+              }
+            ],
+            footer: { text: `Published from Device: ${deviceName} • AutoBackup Releases` },
+            timestamp: new Date().toISOString()
+          }
+        ]
+      };
+
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        return { success: true, message: `Release v${ver} published to Discord successfully!` };
+      } else {
+        const txt = await res.text();
+        return { success: false, error: `Discord webhook returned status ${res.status}: ${txt}` };
+      }
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
   }
 }
 

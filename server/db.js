@@ -19,6 +19,18 @@ db.serialize(() => {
   db.run("PRAGMA cache_size = -64000;"); // 64MB memory cache
   db.run("PRAGMA temp_store = MEMORY;");
 
+  // Integrity quick check
+  db.get("PRAGMA quick_check;", (err, row) => {
+    if (err || (row && row.quick_check !== 'ok')) {
+      console.warn('[DB] ⚠️ Database integrity issue detected:', err ? err.message : row?.quick_check);
+    }
+  });
+
+  // Hourly WAL checkpoint to keep DB size lean and prevent file bloat
+  setInterval(() => {
+    db.run("PRAGMA wal_checkpoint(TRUNCATE);", () => {});
+  }, 3600000).unref();
+
   // Remotes table
   db.run(`
     CREATE TABLE IF NOT EXISTS remotes (
@@ -58,6 +70,16 @@ db.serialize(() => {
   // Migration: ensure bw_limit column exists in tasks if created earlier
   db.run("ALTER TABLE tasks ADD COLUMN bw_limit TEXT DEFAULT ''", (err) => {});
 
+  // Migration: ensure realtime_watch column exists in tasks
+  db.run("ALTER TABLE tasks ADD COLUMN realtime_watch INTEGER DEFAULT 0", (err) => {});
+
+  // Migration: ensure encrypt_backup column exists in tasks
+  db.run("ALTER TABLE tasks ADD COLUMN encrypt_backup INTEGER DEFAULT 0", (err) => {});
+
+  // Migration: ensure created_at exists in logs and tasks
+  db.run("ALTER TABLE logs ADD COLUMN created_at DATETIME", (err) => {});
+  db.run("ALTER TABLE tasks ADD COLUMN created_at DATETIME", (err) => {});
+
   // Settings table for storing Discord webhook URL and global config
   db.run(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -95,9 +117,44 @@ db.serialize(() => {
       name TEXT NOT NULL,
       host_path TEXT NOT NULL,
       container_path TEXT NOT NULL,
+      tags TEXT DEFAULT '',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Migration: ensure tags column exists in sources if created earlier
+  db.run("ALTER TABLE sources ADD COLUMN tags TEXT DEFAULT ''", (err) => {});
+
+  // Failed / Skipped files tracking table (for fault-tolerant continuation & targeted retries)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS failed_files (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      task_name TEXT,
+      log_id TEXT,
+      file_path TEXT NOT NULL,
+      error_reason TEXT,
+      source_path TEXT,
+      target_remote TEXT,
+      target_path TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME
+    )
+  `);
+  // Linked Devices (for tablet / mobile device linking via code)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS linked_devices (
+      id TEXT PRIMARY KEY,
+      device_name TEXT NOT NULL,
+      platform TEXT DEFAULT 'unknown',
+      ip_address TEXT DEFAULT '',
+      token TEXT UNIQUE NOT NULL,
+      linked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_active DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  db.run("CREATE INDEX IF NOT EXISTS idx_linked_devices_token ON linked_devices(token);");
 });
 
 // Database helper functions using Promises
@@ -127,7 +184,56 @@ const dbHelper = {
         else resolve({ lastID: this.lastID, changes: this.changes });
       });
     });
-  }
+  },
+
+  /**
+   * Fully checkpoint and truncate SQLite WAL to ensure 100% data persistence to disk
+   */
+  flushWalCheckpoint() {
+    return new Promise((resolve) => {
+      db.run("PRAGMA wal_checkpoint(FULL);", (err) => {
+        if (err) {
+          console.warn('[DB] WAL checkpoint notice:', err.message);
+        } else {
+          console.log('[DB] 💾 Database WAL fully checkpointed to disk.');
+        }
+        resolve(true);
+      });
+    });
+  },
+
+  /**
+   * Fast in-memory / query helper to map container paths to native host paths
+   */
+  async getSourcePathMap() {
+    try {
+      const rows = await this.all('SELECT container_path, host_path, name FROM sources');
+      const map = {};
+      for (const r of rows) {
+        if (r.container_path && r.host_path) {
+          map[r.container_path.trim()] = r.host_path.trim();
+        }
+      }
+      return map;
+    } catch (e) {
+      return {};
+    }
+  },
+
+  dbInstance: db,
+  DB_PATH,
+  CONFIG_DIR
 };
+
+// Automatic cleanup & WAL flush on process termination
+const cleanupOnExit = () => {
+  try {
+    db.run("PRAGMA wal_checkpoint(FULL);", () => {});
+  } catch (e) {}
+};
+
+process.on('SIGINT', cleanupOnExit);
+process.on('SIGTERM', cleanupOnExit);
+process.on('beforeExit', cleanupOnExit);
 
 module.exports = dbHelper;

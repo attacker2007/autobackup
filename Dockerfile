@@ -1,4 +1,4 @@
-# AutoBackup Hub Dockerfile
+# AutoBackup Dockerfile
 FROM node:20-slim
 
 # Install system utilities & Rclone CLI

@@ -2,33 +2,49 @@
 <html lang="en" dir="ltr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AutoBackup Hub — Multi-Cloud Automated Sync</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2300f2fe' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21.2 15 18 11.8A5.5 5.5 0 1 0 10.6 6'/><path d='M13 18H5a3 3 0 0 1 0-6 4.5 4.5 0 0 1 3.9-2.3 4 4 0 0 1 7.5 1.5'/><polyline points='16 19 19 22 22 19'/><line x1='16' y1='13' x2='19' y2='22'/></svg>">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0d1117">
+  <title>AutoBackup — Multi-Cloud Automated Sync &amp; Backup</title>
+  <link rel="icon" type="image/png" href="icon.png">
+  <link rel="manifest" href="manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=2.8.2">
+  <link rel="stylesheet" href="styles.css?v=2.8.4">
 </head>
 <body>
+
+  <!-- Network Connectivity Status Banner -->
+  <div id="network-offline-banner" class="network-offline-banner hidden">
+    <div class="banner-content">
+      <span class="banner-icon">📶</span>
+      <div class="banner-text">
+        <strong>Internet Connection Disconnected</strong>
+        <p>All active backups have been safely paused to protect data integrity. Transfers will automatically resume the moment connectivity returns.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active Cloud Transfers Banner -->
+  <div id="active-transfers-container" class="active-transfers-container hidden">
+    <!-- Populated dynamically when transfers run -->
+  </div>
 
   <!-- Top Navigation Header -->
   <header class="app-header">
     <div class="brand">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21.2 15 18 11.8A5.5 5.5 0 1 0 10.6 6"></path>
-          <path d="M13 18H5a3 3 0 0 1 0-6 4.5 4.5 0 0 1 3.9-2.3 4 4 0 0 1 7.5 1.5"></path>
-          <polyline points="16 19 19 22 22 19"></polyline>
-          <line x1="19" y1="13" x2="19" y2="22"></line>
-        </svg>
+      <div class="logo-icon" style="background: transparent; box-shadow: none; padding: 0; display: flex; align-items: center;">
+        <img src="icon.png" width="30" height="30" alt="AutoBackup Logo" style="border-radius: 7px; box-shadow: 0 2px 10px rgba(0, 242, 254, 0.25);">
       </div>
       <div>
         <h1 class="brand-title">AutoBackup <span class="accent-text">Hub</span></h1>
         <div class="brand-subtitle">
           <span>Multi-Cloud Sync Engine</span>
           <span class="device-node-pill" id="header-device-badge">💻 Node: Default</span>
-          <span class="version-pill" id="header-version-badge" title="AutoBackup Hub Version • Click to check updates" onclick="openRemotesModal(); switchSettingsModalTab('version');">v2.8.0</span>
+          <span class="version-pill" id="header-version-badge" title="AutoBackup Version • Click to check updates" onclick="checkAppUpdates()">v2.8.3</span>
         </div>
       </div>
     </div>
@@ -37,6 +53,10 @@
       <div class="status-beacon" id="system-status-badge">
         <span class="pulse-dot"></span> System Online
       </div>
+      <button class="btn btn-secondary" id="btn-open-link-device" title="Link Tablet or Phone via 6-Digit Code or QR">
+        <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+        <span>Link Device</span>
+      </button>
       <button class="btn btn-secondary hidden" id="btn-lock-dashboard" title="Lock Web UI with Security PIN">
         <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
         Lock
@@ -138,13 +158,26 @@
           <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" style="color: var(--accent-purple);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
           <h2 class="section-title">Mounted Source Folders (<code style="color: var(--accent-cyan); font-size: 0.95rem;">root/</code>)</h2>
         </div>
-        <div style="display: flex; gap: 0.45rem;">
+        <div style="display: flex; gap: 0.45rem; flex-wrap: wrap;">
           <button class="btn btn-sm btn-primary" id="btn-add-source">
             <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             Add Source Folder
           </button>
+          <button class="btn btn-sm btn-outline-danger" id="btn-sources-bulk-actions" onclick="openBulkRemoveModal()">
+            🗑️ Bulk Actions
+          </button>
           <button class="btn btn-sm btn-secondary" id="btn-dashboard-expand-tree">Expand All</button>
           <button class="btn btn-sm btn-secondary" id="btn-dashboard-collapse-tree">Collapse All</button>
+        </div>
+      </div>
+
+      <!-- Tag Filter Bar & Search Input -->
+      <div class="sources-filter-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem; margin-bottom: 0.75rem; gap: 0.6rem; flex-wrap: wrap;">
+        <div id="source-tag-pills" class="tag-pills-bar" style="display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap;">
+          <span class="tag-pill active" onclick="filterSourcesByTag('all')">🏷️ All Folders</span>
+        </div>
+        <div style="display: flex; gap: 0.4rem; align-items: center;">
+          <input type="text" id="source-search-filter" placeholder="🔍 Search folder or tag..." class="search-input" style="width: 210px;" oninput="onSourceSearchInput(this.value)">
         </div>
       </div>
 
@@ -192,7 +225,7 @@
 
         <div class="console-container">
           <div class="console-window" id="console-output">
-            <div class="console-line system">[System] Connected to AutoBackup Hub. Ready for operations.</div>
+            <div class="console-line system">[System] Connected to AutoBackup Engine. Ready for operations.</div>
           </div>
         </div>
       </section>
@@ -383,6 +416,24 @@
           <input type="text" id="task-cron" value="last_friday" placeholder="e.g. */30 * * * *">
         </div>
 
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; margin-bottom: 1rem;">
+          <div class="form-group" style="background: rgba(0, 242, 254, 0.05); border: 1px solid rgba(0, 242, 254, 0.2); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0;">
+            <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 0.2rem;">
+              <span style="font-weight: 700; color: var(--accent-cyan); font-size: 0.8rem;">⚡ Real-Time Sync</span>
+              <input type="checkbox" id="task-realtime-watch" style="width: 17px; height: 17px; cursor: pointer;">
+            </label>
+            <span class="form-help" style="margin: 0; font-size: 0.71rem;">Watches folder for file changes &amp; triggers instant debounced backup.</span>
+          </div>
+
+          <div class="form-group" style="background: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0;">
+            <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 0.2rem;">
+              <span style="font-weight: 700; color: #a78bfa; font-size: 0.8rem;">🔒 Cloud Encryption</span>
+              <input type="checkbox" id="task-encrypt-backup" style="width: 17px; height: 17px; cursor: pointer;">
+            </label>
+            <span class="form-help" style="margin: 0; font-size: 0.71rem;">Zero-knowledge AES-256 encryption via Settings encryption key.</span>
+          </div>
+        </div>
+
         <input type="hidden" id="task-priority" value="normal">
 
         <div class="modal-footer">
@@ -411,6 +462,9 @@
         </button>
         <button type="button" class="modal-tab-btn" id="tab-btn-settings-security" onclick="switchSettingsModalTab('security')">
           🔒 Security PIN
+        </button>
+        <button type="button" class="modal-tab-btn" id="tab-btn-settings-encryption" onclick="switchSettingsModalTab('encryption')">
+          🔐 Cloud Encryption
         </button>
         <button type="button" class="modal-tab-btn" id="tab-btn-settings-backup" onclick="switchSettingsModalTab('backup')">
           💾 Migration &amp; Multi-Device
@@ -522,11 +576,27 @@
                 <button type="button" class="btn btn-sm btn-primary" id="btn-save-discord">Save Webhook</button>
                 <button type="button" class="btn btn-sm btn-outline" id="btn-test-discord">🧪 Test Card</button>
               </div>
-              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.25); padding: 0.35rem 0.55rem; border-radius: 4px; margin-top: 0.4rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.25); padding: 0.35rem 0.55rem; border-radius: 4px; margin-top: 0.4rem; flex-wrap: wrap; gap: 0.4rem;">
                 <span style="font-size: 0.72rem; color: var(--text-dim);">Automated 30-Day Executive Report runs monthly (1st of month).</span>
                 <button type="button" class="btn btn-sm btn-secondary" id="btn-trigger-monthly-report" style="font-size: 0.72rem;">
                   📊 Send Test Monthly Report
                 </button>
+              </div>
+
+              <!-- Discord .EXE and Docker Container Publisher Card -->
+              <div style="margin-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 0.6rem;">
+                <label style="font-size: 0.8rem; font-weight: 700; color: #a5b4fc; display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.2rem;">
+                  🚀 Publish .EXE &amp; Docker Container to Discord
+                </label>
+                <p style="font-size: 0.73rem; color: var(--text-muted); margin-bottom: 0.45rem;">
+                  Broadcast a rich release card to your Discord channel containing direct download links for the Windows setup installer (.exe), portable executable, and Docker container run commands.
+                </p>
+                <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                  <button type="button" class="btn btn-sm btn-primary" id="btn-publish-discord-release" onclick="publishReleaseToDiscord()" style="background: linear-gradient(135deg, #6366f1, #3b82f6); border-color: #6366f1;">
+                    📢 Publish Release to Discord Webhook
+                  </button>
+                  <span id="discord-publish-status" style="font-size: 0.76rem; color: #34d399;"></span>
+                </div>
               </div>
             </div>
 
@@ -551,7 +621,7 @@
             <h4 style="color: #a78bfa; display: flex; align-items: center; gap: 0.4rem; font-size: 0.95rem;">
               <span>🔒</span> Web UI Dashboard Security PIN
             </h4>
-            <p style="font-size: 0.78rem; color: var(--text-muted);">Protect your AutoBackup Hub web dashboard with a numeric Security PIN (4 to 8 digits).</p>
+            <p style="font-size: 0.78rem; color: var(--text-muted);">Protect your AutoBackup web dashboard with a numeric Security PIN (4 to 8 digits).</p>
             
             <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.4rem;">
               <input type="text" id="pin-setup-input" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="New PIN (or blank to disable)" style="flex: 1; -webkit-text-security: disc;">
@@ -562,9 +632,75 @@
           </div>
         </div>
 
+        <!-- Tab 3.5: Zero-Knowledge Client-Side Encryption Setup -->
+        <div id="tab-settings-encryption" class="hidden">
+          <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+            <div class="migration-card" style="border-color: rgba(139, 92, 246, 0.4); background: rgba(139, 92, 246, 0.08);">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.4rem;">
+                <div>
+                  <h4 style="color: #c4b5fd; display: flex; align-items: center; gap: 0.4rem; font-size: 0.95rem; margin-bottom: 0.2rem;">
+                    <span>🔐</span> Zero-Knowledge Client-Side Cloud Encryption (rclone crypt)
+                  </h4>
+                  <p style="font-size: 0.76rem; color: var(--text-muted); margin: 0;">
+                    Encrypts all file contents with military-grade AES-256 and scrambles directory/filenames before leaving your computer. Cloud providers only see scrambled ciphertext.
+                  </p>
+                </div>
+                <span class="badge badge-secondary" id="encryption-status-badge" style="font-size: 0.72rem; padding: 0.2rem 0.5rem;">Optional</span>
+              </div>
+
+              <div class="form-group" style="margin-top: 0.75rem; background: rgba(0,0,0,0.3); padding: 0.6rem 0.8rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+                <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
+                  <span style="font-weight: 700; color: #e2e8f0; font-size: 0.82rem;">Enable Client-Side Encryption Layer</span>
+                  <input type="checkbox" id="setting-encryption-enabled" style="width: 18px; height: 18px; cursor: pointer;">
+                </label>
+                <span class="form-help" style="margin: 0; font-size: 0.71rem;">When enabled, tasks marked with "Cloud Encryption" automatically encrypt all data via crypt wrapper remotes.</span>
+              </div>
+
+              <div class="grid-2col" style="margin-top: 0.75rem;">
+                <div class="form-group">
+                  <label>Encryption Passphrase / Key <span style="color:#fb7185;">*</span></label>
+                  <input type="password" id="setting-encryption-password" placeholder="Enter strong encryption passphrase" autocomplete="new-password">
+                  <span class="form-help">Keep this safe! If lost, encrypted files in cloud cannot be decrypted.</span>
+                </div>
+                <div class="form-group">
+                  <label>Secondary Salt / Password 2 (Optional)</label>
+                  <input type="password" id="setting-encryption-salt" placeholder="Optional key salt" autocomplete="new-password">
+                  <span class="form-help">Optional extra security salt for key derivation.</span>
+                </div>
+              </div>
+
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.6rem; flex-wrap: wrap; gap: 0.5rem;">
+                <button type="button" class="btn btn-sm btn-primary" id="btn-save-encryption" style="background: linear-gradient(135deg, #8b5cf6, #6366f1); border-color: #8b5cf6;">
+                  💾 Save Encryption Settings
+                </button>
+                <span id="encryption-feedback" style="font-size: 0.76rem; color: #a7f3d0;"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Tab 4: Migration & Multi-Device Section -->
         <div id="tab-settings-backup" class="hidden">
           <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+
+            <!-- Windows Explorer Right-Click Integration -->
+            <div class="migration-card" style="border-color: rgba(59, 130, 246, 0.35);">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.4rem;">
+                <div>
+                  <h4 style="color: #60a5fa; display: flex; align-items: center; gap: 0.4rem; font-size: 0.92rem; margin-bottom: 0.2rem;">
+                    <span>🖱️</span> Windows Explorer Right-Click Integration
+                  </h4>
+                  <p style="font-size: 0.76rem; color: var(--text-muted); margin: 0;">
+                    Right-click any folder or directory in Windows Explorer to instantly add it to AutoBackup.
+                  </p>
+                </div>
+                <span class="badge badge-secondary" id="context-menu-badge" style="font-size: 0.72rem; padding: 0.2rem 0.5rem;">Checking...</span>
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.25); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06); margin-top: 0.5rem;">
+                <span style="font-size: 0.78rem; color: #e2e8f0; font-weight: 500;">Enable "Add to AutoBackup" in Explorer context menu</span>
+                <input type="checkbox" id="setting-context-menu-toggle" style="width: 18px; height: 18px; cursor: pointer;">
+              </div>
+            </div>
             
             <!-- Device Node Identifier -->
             <div class="migration-card">
@@ -646,7 +782,7 @@
               <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.6rem;">
                 <div>
                   <h4 style="color: #a5b4fc; display: flex; align-items: center; gap: 0.4rem; font-size: 0.95rem; margin-bottom: 0.2rem;">
-                    <span>📦</span> AutoBackup Hub Version Control
+                    <span>📦</span> AutoBackup Version Control
                   </h4>
                   <p style="font-size: 0.76rem; color: var(--text-muted); margin: 0;">
                     Automated multi-cloud sync &amp; backup container service
@@ -695,7 +831,7 @@
                 When deploying on Railway, Docker containers automatically pull the latest image tagged with <code>latest</code> or rebuild from the <code>main</code> branch upon GitHub release publication.
               </p>
               <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; padding: 0.5rem 0.7rem; border-radius: 4px; font-size: 0.73rem; color: #bae6fd; margin-bottom: 0.4rem;">
-                💡 <strong>Persistent Storage:</strong> AutoBackup Hub includes built-in auto-seeding across container restarts. For hardware-level permanent storage on Railway, you can also attach a <strong>Railway Volume</strong> with Mount Path <code>/config</code>.
+                💡 <strong>Persistent Storage:</strong> AutoBackup includes built-in auto-seeding across container restarts. For hardware-level permanent storage on Railway, you can also attach a <strong>Railway Volume</strong> with Mount Path <code>/config</code>.
               </div>
               <div style="background: rgba(0,0,0,0.35); padding: 0.4rem 0.6rem; border-radius: 4px; font-family: var(--font-mono); font-size: 0.72rem; color: #a7f3d0;">
                 docker pull ghcr.io/attacker2007/autobackup:latest
@@ -920,10 +1056,15 @@
           <label>Friendly Name (Optional)</label>
           <input type="text" id="source-name-input" placeholder="e.g. autobackup, Pictures, Important">
         </div>
-        <div class="form-group" id="group-filter-subfolders">
-          <label>Filter Subfolders</label>
-          <input type="text" id="folder-browser-search" placeholder="Type to filter folders..." oninput="filterFolderBrowserItems(this.value)">
+        <div class="form-group">
+          <label>Tags / Categories (Comma-separated)</label>
+          <input type="text" id="source-tags-input" placeholder="e.g. Work, Code, Personal">
         </div>
+      </div>
+
+      <div class="form-group" id="group-filter-subfolders" style="margin-bottom: 0.75rem;">
+        <label>Filter Subfolders</label>
+        <input type="text" id="folder-browser-search" placeholder="Type to filter folders..." oninput="filterFolderBrowserItems(this.value)">
       </div>
 
       <div class="form-group">
@@ -1013,6 +1154,10 @@
           <input type="text" id="edit-source-name" required placeholder="e.g. autobackup">
         </div>
         <div class="form-group">
+          <label>Tags / Categories (Comma-separated)</label>
+          <input type="text" id="edit-source-tags" placeholder="e.g. Work, Code, Personal">
+        </div>
+        <div class="form-group">
           <label>Device Disk &amp; Folder Path</label>
           <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.35rem;">
             <select id="edit-source-drive-select" style="width: 125px; background: #0f172a; border: 1px solid rgba(255,255,255,0.15); color: #38bdf8; border-radius: 6px; padding: 0.52rem 0.5rem; font-weight: 600; font-family: var(--font-mono); font-size: 0.82rem; cursor: pointer;">
@@ -1095,7 +1240,7 @@
         <div style="width: 50px; height: 50px; margin: 0 auto 0.75rem; border-radius: 50%; background: linear-gradient(135deg, rgba(139, 92, 246, 0.3), rgba(59, 130, 246, 0.3)); border: 1px solid rgba(139, 92, 246, 0.5); display: flex; align-items: center; justify-content: center; color: #a78bfa;">
           <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
         </div>
-        <h3 style="font-family: var(--font-heading); font-size: 1.25rem; color: #fff; margin-bottom: 0.2rem;">AutoBackup Hub Locked</h3>
+        <h3 style="font-family: var(--font-heading); font-size: 1.25rem; color: #fff; margin-bottom: 0.2rem;">AutoBackup Locked</h3>
         <p style="font-size: 0.78rem; color: var(--text-muted);">Enter your numeric Security PIN to access dashboard</p>
       </div>
 
@@ -1111,6 +1256,260 @@
     </div>
   </div>
 
-  <script src="app.js?v=2.8.2"></script>
+  <!-- Modal: Run Selected Folders Only (Partial Task Execution) -->
+  <div class="modal-overlay" id="modal-partial-task">
+    <div class="modal-card" style="max-width: 640px; width: 95%;">
+      <div class="modal-header">
+        <h3 id="partial-task-title">📂 Run Partial Backup</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 1.1rem 1.4rem;">
+        <input type="hidden" id="partial-task-id">
+        <p id="partial-task-desc" style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.85rem;">
+          Select the specific folders, subdirectories, or items you want to backup in this run. Unchecked items will be safely skipped:
+        </p>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+          <span style="font-size: 0.78rem; color: var(--accent-cyan); font-weight: 700;" id="partial-selected-count">0 of 0 selected</span>
+          <div style="display: flex; gap: 0.4rem;">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllPartialSources(true)">Select All</button>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="toggleAllPartialSources(false)">Deselect All</button>
+          </div>
+        </div>
+
+        <div id="partial-sources-list" style="max-height: 380px; overflow-y: auto; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.65rem; display: flex; flex-direction: column; gap: 0.5rem;">
+          <!-- Dynamically populated folders and sub-items -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btn-execute-partial-run" onclick="executePartialTaskRun()">
+          🚀 Run Partial Backup
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Link Tablet & Mobile Devices (6-Digit Code System, QR, LAN) -->
+  <div class="modal-overlay" id="modal-link-device">
+    <div class="modal-card" style="max-width: 480px; text-align: center;">
+      <div class="modal-header">
+        <h3>📱 Link Tablet &amp; Devices</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+
+      <!-- Tab navigation for Pairing -->
+      <div style="display: flex; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(0,0,0,0.2);">
+        <button type="button" id="tab-btn-pair-code" class="modal-tab-btn active" onclick="switchPairingModalTab('code')" style="flex: 1; padding: 0.65rem 0.5rem; background: none; border: none; border-bottom: 2px solid var(--accent-cyan); color: var(--accent-cyan); font-weight: 600; cursor: pointer; font-size: 0.82rem;">
+          🔢 6-Digit Code
+        </button>
+        <button type="button" id="tab-btn-pair-enter" class="modal-tab-btn" onclick="switchPairingModalTab('enter')" style="flex: 1; padding: 0.65rem 0.5rem; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); font-weight: 600; cursor: pointer; font-size: 0.82rem;">
+          📲 Enter Code Here
+        </button>
+        <button type="button" id="tab-btn-pair-qr" class="modal-tab-btn" onclick="switchPairingModalTab('qr')" style="flex: 1; padding: 0.65rem 0.5rem; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); font-weight: 600; cursor: pointer; font-size: 0.82rem;">
+          📷 QR &amp; Direct LAN
+        </button>
+      </div>
+
+      <div class="modal-body" style="padding: 1.25rem 1.5rem;">
+        
+        <!-- Tab 1: Generate & View 6-Digit Code -->
+        <div id="pair-tab-code">
+          <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.85rem;">
+            Open AutoBackup on your tablet browser and enter this 6-digit code to link instantly:
+          </p>
+
+          <div style="background: rgba(0, 242, 254, 0.06); border: 2px dashed rgba(0, 242, 254, 0.4); border-radius: 12px; padding: 1.25rem 1rem; margin-bottom: 1rem;">
+            <div id="pairing-code-display" style="font-family: var(--font-mono); font-size: 2.3rem; font-weight: 800; letter-spacing: 0.25em; color: var(--accent-cyan); text-shadow: 0 0 20px rgba(0, 242, 254, 0.5);">
+              --- ---
+            </div>
+            <div style="display: flex; justify-content: center; align-items: center; gap: 0.75rem; margin-top: 0.6rem;">
+              <span id="pairing-countdown-text" style="font-size: 0.75rem; color: var(--text-dim);">⏳ Expires in 15:00</span>
+              <button type="button" class="btn btn-sm btn-outline" onclick="copyPairingCode()" title="Copy Code">📋 Copy</button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="fetchPairingCode(true)" title="Generate New Code">🔄 Refresh</button>
+            </div>
+          </div>
+
+          <div style="width: 100%; margin-bottom: 0.85rem; text-align: left;">
+            <label style="font-size: 0.74rem; color: var(--text-dim); display: block; margin-bottom: 0.3rem;">1. Address to open on your tablet/phone:</label>
+            <div style="display: flex; gap: 0.4rem;">
+              <input type="text" id="pairing-url-input" readonly style="flex: 1; text-align: center; font-family: var(--font-mono); font-size: 0.82rem; background: rgba(0,0,0,0.4); border-color: rgba(0,242,254,0.3); color: var(--accent-cyan);" value="http://localhost:3000">
+              <button type="button" class="btn btn-sm btn-primary" id="btn-copy-pairing-url" onclick="copyPairingUrl()">📋 Copy</button>
+            </div>
+          </div>
+
+          <div id="pairing-firewall-note" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.65rem; text-align: left; font-size: 0.74rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong style="color: #f59e0b; display: block; margin-bottom: 0.2rem;">💡 Can't open the page on your tablet?</strong>
+            <span>Windows Defender Firewall may be blocking port 3000 on your LAN. Run this quick PowerShell rule on your PC:</span>
+            <div style="display: flex; gap: 0.4rem; margin-top: 0.4rem;">
+              <input type="text" id="firewall-cmd-input" readonly style="flex: 1; font-size: 0.7rem; font-family: var(--font-mono); background: rgba(0,0,0,0.4); color: var(--text-dim);" value="New-NetFirewallRule -DisplayName 'AutoBackup' -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow">
+              <button type="button" class="btn btn-sm btn-secondary" onclick="copyFirewallCommand()">📋 Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Enter Code (For tablets or secondary devices linking to host) -->
+        <div id="pair-tab-enter" style="display: none; text-align: left;">
+          <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem;">
+            Enter the 6-digit code shown on your AutoBackup host PC:
+          </p>
+          <div class="form-group" style="margin-bottom: 1rem;">
+            <label style="font-size: 0.75rem; color: var(--text-dim);">6-Digit Pairing Code</label>
+            <input type="text" id="input-verify-pairing-code" placeholder="e.g. 748-291" maxlength="7" style="font-family: var(--font-mono); font-size: 1.4rem; text-align: center; letter-spacing: 0.15em; font-weight: 700; color: var(--accent-cyan); width: 100%;">
+          </div>
+          <div class="form-group" style="margin-bottom: 1rem;">
+            <label style="font-size: 0.75rem; color: var(--text-dim);">Device Nickname (Optional)</label>
+            <input type="text" id="input-verify-device-name" placeholder="e.g. Galaxy Tab, iPad Pro" style="width: 100%;">
+          </div>
+          <button type="button" class="btn btn-primary" id="btn-submit-verify-code" onclick="submitPairingCode()" style="width: 100%; justify-content: center;">
+            🔗 Link This Device Now
+          </button>
+          <div id="pair-verify-status" style="margin-top: 0.75rem; font-size: 0.8rem; text-align: center; display: none;"></div>
+        </div>
+
+        <!-- Tab 3: QR Code & LAN Info -->
+        <div id="pair-tab-qr" style="display: none; flex-direction: column; align-items: center;">
+          <div id="qr-code-wrapper" style="background: #ffffff; padding: 1rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); margin-bottom: 1rem; display: inline-block;">
+            <img id="pairing-qr-image" src="" alt="Pairing QR Code" style="width: 170px; height: 170px; display: block;">
+          </div>
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.7rem; text-align: left; font-size: 0.76rem; color: var(--text-muted); width: 100%;">
+            <strong style="color: #38bdf8; display: block; margin-bottom: 0.25rem;">📲 Install as Native App on Tablet:</strong>
+            <span style="display: block; margin-bottom: 0.2rem;">• <strong>Android / Chrome:</strong> Tap Menu (⋮) → <em>"Install app"</em> or <em>"Add to Home screen"</em></span>
+            <span>• <strong>iPad / Safari:</strong> Tap Share (⬆️) → <em>"Add to Home Screen"</em></span>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer" style="justify-content: space-between; align-items: center;">
+        <span id="linked-devices-count-text" style="font-size: 0.74rem; color: var(--text-dim);"></span>
+        <button type="button" class="btn btn-secondary modal-close">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: App Updates & Releases -->
+  <div class="modal-overlay" id="modal-app-update">
+    <div class="modal-card" style="max-width: 480px;">
+      <div class="modal-header">
+        <h3 id="update-modal-title">🚀 AutoBackup Updates</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 1.25rem;">
+        <div id="update-status-wrap" style="text-align: center; padding: 0.5rem 0;">
+          <div id="update-icon-indicator" style="font-size: 2.2rem; margin-bottom: 0.5rem;">🔄</div>
+          <h4 id="update-heading-text" style="font-size: 1.05rem; margin-bottom: 0.35rem;">Checking for Updates...</h4>
+          <p id="update-description-text" style="font-size: 0.82rem; color: var(--text-muted);">Connecting to AutoBackup GitHub repository...</p>
+        </div>
+
+        <div id="update-progress-container" style="display: none; margin: 1rem 0;">
+          <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-dim); margin-bottom: 0.3rem;">
+            <span>Downloading Update...</span>
+            <span id="update-percent-text">0%</span>
+          </div>
+          <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden;">
+            <div id="update-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald)); transition: width 0.2s;"></div>
+          </div>
+        </div>
+
+        <div id="update-release-notes-box" style="display: none; max-height: 160px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 8px; font-size: 0.78rem; color: var(--text-muted); margin-top: 0.75rem; border: 1px solid rgba(255,255,255,0.06);">
+        </div>
+      </div>
+      <div class="modal-footer" id="update-modal-footer" style="justify-content: flex-end; gap: 0.5rem;">
+        <button type="button" class="btn btn-secondary modal-close">Close</button>
+        <button type="button" class="btn btn-primary" id="btn-update-action" onclick="handleUpdateActionClick()">Check Again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Bulk Remove Sources -->
+  <div class="modal-overlay" id="modal-bulk-remove-sources">
+    <div class="modal-card" style="max-width: 420px;">
+      <div class="modal-header">
+        <h3 style="color: #fb7185;">🗑️ Bulk Remove Sources</h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 1.25rem;">
+        <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem;">
+          Choose an option to bulk clean source folders from AutoBackup:
+        </p>
+
+        <div class="form-group">
+          <label>Removal Scope</label>
+          <select id="bulk-remove-mode" onchange="onBulkRemoveModeChange(this.value)">
+            <option value="all">💥 Remove ALL Source Folders</option>
+            <option value="tag">🏷️ Remove by Tag</option>
+          </select>
+        </div>
+
+        <div class="form-group hidden" id="bulk-remove-tag-group">
+          <label>Select Tag to Remove</label>
+          <select id="bulk-remove-tag-select">
+            <!-- Dynamically filled with existing tags -->
+          </select>
+        </div>
+
+        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; padding: 0.6rem 0.8rem; font-size: 0.76rem; color: #fca5a5;">
+          ⚠️ <strong>Notice:</strong> This only removes the folders from AutoBackup's monitoring list. Your actual files on disk will NOT be touched.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary modal-close">Cancel</button>
+        <button type="button" class="btn btn-danger" id="btn-confirm-bulk-remove" onclick="executeBulkRemoveSources()">
+          Confirm Bulk Removal
+        </button>
+      </div>
+    </div>
+  <!-- Modal: Check Failed & Skipped Files -->
+  <div class="modal-overlay" id="modal-failed-files">
+    <div class="modal-card" style="max-width: 680px;">
+      <div class="modal-header">
+        <h3 id="failed-files-modal-title" style="color: #f59e0b; display: flex; align-items: center; gap: 0.4rem;">
+          <span>⚠️</span> Failed &amp; Skipped Files (<span id="failed-files-count-badge">0</span>)
+        </h3>
+        <button class="btn-close modal-close">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 1rem 1.25rem;">
+        <input type="hidden" id="failed-files-task-id">
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+          The following files encountered temporary errors (e.g. file in use by another app, permission restrictions) and were skipped so your entire multi-hour backup task could complete successfully. You can retry them now or dismiss them.
+        </p>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+          <span style="font-size: 0.76rem; color: #fbbf24; font-weight: 600;" id="failed-files-task-name-label">Task: ...</span>
+          <button type="button" class="btn btn-sm btn-secondary" onclick="copyFailedFilesList()" id="btn-copy-failed-files">
+            📋 Copy Path List
+          </button>
+        </div>
+
+        <div id="failed-files-table-container" style="max-height: 300px; overflow-y: auto; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;">
+          <table class="table" style="margin: 0; font-size: 0.78rem;">
+            <thead>
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <th style="padding: 0.5rem 0.75rem;">Relative File Path</th>
+                <th style="padding: 0.5rem 0.75rem;">Failure Reason</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="failed-files-list-body">
+              <!-- Dynamically populated failed files -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content: space-between;">
+        <button type="button" class="btn btn-secondary" onclick="dismissAllFailedFiles()" id="btn-dismiss-failed-files">
+          Dismiss All
+        </button>
+        <div style="display: flex; gap: 0.5rem;">
+          <button type="button" class="btn btn-secondary modal-close">Close</button>
+          <button type="button" class="btn btn-primary" id="btn-retry-failed-files" onclick="retryFailedFilesNow()" style="background: linear-gradient(135deg, #f59e0b, #d97706); border-color: #d97706;">
+            🔄 Retry Failed Files Now
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=2.8.6"></script>
 </body>
 </html>

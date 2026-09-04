@@ -50,7 +50,7 @@ wss.on('connection', (ws) => {
     ws.isAlive = true;
   });
 
-  ws.send(JSON.stringify({ type: 'connected', data: { message: 'Connected to AutoBackup Hub live stream' } }));
+  ws.send(JSON.stringify({ type: 'connected', data: { message: 'Connected to AutoBackup live stream' } }));
 
   ws.on('close', () => {
     connectedSockets.delete(ws);
@@ -138,15 +138,16 @@ async function restoreConfigBundle(bundle) {
           'SELECT id FROM sources WHERE id = ? OR LOWER(host_path) = LOWER(?) OR LOWER(container_path) = LOWER(?)',
           [src.id, src.host_path, src.container_path || src.host_path]
         );
+        const tags = src.tags || '';
         if (existing) {
           await db.run(
-            'UPDATE sources SET name = ?, host_path = ?, container_path = ? WHERE id = ?',
-            [src.name, src.host_path, src.container_path || src.host_path, existing.id]
+            'UPDATE sources SET name = ?, host_path = ?, container_path = ?, tags = ? WHERE id = ?',
+            [src.name, src.host_path, src.container_path || src.host_path, tags, existing.id]
           );
         } else {
           await db.run(
-            'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?)',
-            [src.id, src.name, src.host_path, src.container_path || src.host_path]
+            'INSERT INTO sources (id, name, host_path, container_path, tags) VALUES (?, ?, ?, ?, ?)',
+            [src.id, src.name, src.host_path, src.container_path || src.host_path, tags]
           );
         }
         sourcesImported++;
@@ -159,8 +160,8 @@ async function restoreConfigBundle(bundle) {
     for (const t of bundle.tasks) {
       if (t.id && t.name && t.target_remote) {
         await db.run(
-          `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,
              source_path=excluded.source_path,
@@ -171,11 +172,14 @@ async function restoreConfigBundle(bundle) {
              enabled=excluded.enabled,
              conflict_mode=excluded.conflict_mode,
              priority=excluded.priority,
-             bw_limit=excluded.bw_limit`,
+             bw_limit=excluded.bw_limit,
+             realtime_watch=excluded.realtime_watch,
+             encrypt_backup=excluded.encrypt_backup`,
           [
             t.id, t.name, t.source_path, t.target_remote, t.target_path || '',
             t.mode || 'copy', t.cron_schedule, t.enabled !== undefined ? t.enabled : 1,
-            t.conflict_mode || 'smart', t.priority || 'normal', t.bw_limit || ''
+            t.conflict_mode || 'smart', t.priority || 'normal', t.bw_limit || '',
+            t.realtime_watch ? 1 : 0, t.encrypt_backup ? 1 : 0
           ]
         );
         tasksImported++;
@@ -247,9 +251,26 @@ async function saveCurrentConfigSnapshot() {
       // Ignored if read-only mount
     }
 
+    // 3. Mirror snapshot and rclone.conf to Electron Roaming AppData for seamless packaging & persistence
+    if (process.platform === 'win32' && process.env.APPDATA) {
+      try {
+        const appDataAutoBackup = path.join(process.env.APPDATA, 'AutoBackup', 'data');
+        if (!fs.existsSync(appDataAutoBackup)) fs.mkdirSync(appDataAutoBackup, { recursive: true });
+        fs.writeFileSync(path.join(appDataAutoBackup, 'autobackup-current-config.json'), bundleJson, 'utf8');
+        if (CONFIG_DIR !== appDataAutoBackup && rcloneConfig) {
+          fs.writeFileSync(path.join(appDataAutoBackup, 'rclone.conf'), rcloneConfig, 'utf8');
+        }
+      } catch (e) {}
+    }
+
+    // 4. Checkpoint SQLite WAL to disk
+    if (db && typeof db.flushWalCheckpoint === 'function') {
+      await db.flushWalCheckpoint().catch(() => {});
+    }
+
     return { success: true, path: snapshotPath, bundle };
   } catch (err) {
-    console.error('[AutoBackup Hub Persistence] Error saving config snapshot:', err.message);
+    console.error('[AutoBackup Persistence] Error saving config snapshot:', err.message);
     return { success: false, error: err.message };
   }
 }
@@ -327,18 +348,18 @@ async function autoSeedConfiguration() {
 }
 
 // Startup sequence: sanitize tokens -> auto-seed configuration -> initialize scheduler
-async function initAutoBackupHub() {
+async function initAutoBackup() {
   try {
     rclone.sanitizeRcloneConfigFile();
     await syncComposeSources();
     await autoSeedConfiguration();
     await scheduler.init();
   } catch (err) {
-    console.error('[AutoBackup Hub] Startup error:', err);
+    console.error('[AutoBackup] Startup error:', err);
   }
 }
 
-initAutoBackupHub();
+initAutoBackup();
 
 // Pre-warm quota cache in the background so remotes UI is fast on first open
 // Pre-warm quota cache for first remote only — fetching all at once exhausts
@@ -421,7 +442,7 @@ async function syncComposeSources() {
       break;
     }
   } catch (err) {
-    console.error('[AutoBackup Hub] Error syncing compose sources to DB:', err.message);
+    console.error('[AutoBackup] Error syncing compose sources to DB:', err.message);
   }
 }
 
@@ -540,6 +561,7 @@ app.get('/api/sources', async (req, res) => {
           containerPath: src.container_path,
           hostPath: src.host_path,
           name: src.name,
+          tags: src.tags || '',
           label: `${src.container_path}  (${src.name}: ${src.host_path})`,
           source: 'user'
         });
@@ -547,6 +569,7 @@ app.get('/api/sources', async (req, res) => {
         const item = sourcesMap.get(src.container_path);
         item.id = src.id;
         item.name = src.name;
+        item.tags = src.tags || '';
         if (src.name) {
           item.label = `${src.container_path}  (${src.name}: ${src.host_path})`;
         }
@@ -562,14 +585,14 @@ app.get('/api/sources', async (req, res) => {
 
 /**
  * Add a user-defined source folder (no docker-compose edit needed)
- * Body: { name: "My Project", host_path: "C:/Users/Dr/NewProject" }
+ * Body: { name: "My Project", host_path: "C:/Users/Dr/NewProject", tags: "Work,Code" }
  */
 app.post('/api/sources', async (req, res) => {
   try {
     const body = req.body;
     const sourcesToAdd = Array.isArray(body.sources) 
       ? body.sources 
-      : (body.host_path || body.path ? [{ name: body.name || '', host_path: body.host_path || body.path }] : []);
+      : (body.host_path || body.path ? [{ name: body.name || '', host_path: body.host_path || body.path, tags: body.tags || '' }] : []);
 
     if (sourcesToAdd.length === 0) {
       return res.status(400).json({ error: 'Folder path (host_path or sources array) is required' });
@@ -580,13 +603,14 @@ app.post('/api/sources', async (req, res) => {
       const rawPath = (item.host_path || item.path || '').trim();
       if (!rawPath) continue;
       const itemName = (item.name && item.name.trim()) || path.basename(rawPath.replace(/\\/g, '/')) || 'Source Folder';
+      const itemTags = (item.tags !== undefined ? item.tags : (body.tags || '')).toString().trim();
       const container_path = hostPathToContainerPath(rawPath);
       const id = uuidv4();
       await db.run(
-        'INSERT INTO sources (id, name, host_path, container_path) VALUES (?, ?, ?, ?)',
-        [id, itemName, rawPath, container_path]
+        'INSERT INTO sources (id, name, host_path, container_path, tags) VALUES (?, ?, ?, ?, ?)',
+        [id, itemName, rawPath, container_path, itemTags]
       );
-      inserted.push({ id, name: itemName, host_path: rawPath, container_path });
+      inserted.push({ id, name: itemName, host_path: rawPath, container_path, tags: itemTags });
     }
 
     saveCurrentConfigSnapshot().catch(() => {});
@@ -610,27 +634,68 @@ app.delete('/api/sources/:id', async (req, res) => {
 });
 
 /**
- * Update an existing user-defined source (name and host_path)
+ * Bulk delete sources (all, by tag, or by list of IDs)
+ * Body: { all: true } OR { tag: "Work" } OR { ids: ["id1", "id2"] }
+ */
+app.post('/api/sources/bulk-delete', async (req, res) => {
+  try {
+    const { all, tag, ids } = req.body;
+    let deletedCount = 0;
+
+    if (all) {
+      const resDel = await db.run('DELETE FROM sources');
+      deletedCount = resDel.changes || 0;
+    } else if (tag && String(tag).trim()) {
+      const targetTag = String(tag).trim().toLowerCase();
+      const allSources = await db.all('SELECT id, tags FROM sources');
+      const matchingIds = allSources.filter(s => {
+        const sourceTags = (s.tags || '').toLowerCase().split(',').map(t => t.trim());
+        return sourceTags.includes(targetTag);
+      }).map(s => s.id);
+
+      if (matchingIds.length > 0) {
+        const placeholders = matchingIds.map(() => '?').join(',');
+        const resDel = await db.run(`DELETE FROM sources WHERE id IN (${placeholders})`, matchingIds);
+        deletedCount = resDel.changes || 0;
+      }
+    } else if (Array.isArray(ids) && ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(',');
+      const resDel = await db.run(`DELETE FROM sources WHERE id IN (${placeholders})`, ids);
+      deletedCount = resDel.changes || 0;
+    } else {
+      return res.status(400).json({ error: 'Please specify "all: true", a "tag", or an array of "ids".' });
+    }
+
+    saveCurrentConfigSnapshot().catch(() => {});
+    res.json({ success: true, count: deletedCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Update an existing user-defined source (name, host_path, and tags)
  */
 app.put('/api/sources/:id', async (req, res) => {
   try {
-    const { name, host_path } = req.body;
+    const { name, host_path, tags } = req.body;
     if (!host_path) {
       return res.status(400).json({ error: 'host_path is required' });
     }
     const rawPath = String(host_path).trim();
     const itemName = (name && name.trim()) || path.basename(rawPath.replace(/\\/g, '/')) || 'Source Folder';
+    const itemTags = tags !== undefined ? String(tags).trim() : '';
     const container_path = hostPathToContainerPath(rawPath);
 
     await db.run(
-      'UPDATE sources SET name = ?, host_path = ?, container_path = ? WHERE id = ?',
-      [itemName, rawPath, container_path, req.params.id]
+      'UPDATE sources SET name = ?, host_path = ?, container_path = ?, tags = ? WHERE id = ?',
+      [itemName, rawPath, container_path, itemTags, req.params.id]
     );
 
     saveCurrentConfigSnapshot().catch(() => {});
     res.json({
       success: true,
-      source: { id: req.params.id, name: itemName, host_path: rawPath, container_path }
+      source: { id: req.params.id, name: itemName, host_path: rawPath, container_path, tags: itemTags }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -793,7 +858,12 @@ app.get('/api/sources/browse', (req, res) => {
  */
 app.get('/api/tasks', async (req, res) => {
   try {
-    const tasks = await db.all('SELECT * FROM tasks ORDER BY created_at DESC');
+    const tasks = await db.all(`
+      SELECT t.*, 
+        (SELECT COUNT(*) FROM failed_files f WHERE f.task_id = t.id AND f.status = 'pending') as failed_files_count
+      FROM tasks t 
+      ORDER BY t.created_at DESC
+    `);
     res.json(tasks);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -819,7 +889,7 @@ function inferPriority(cronSchedule, providedPriority) {
  */
 app.post('/api/tasks', async (req, res) => {
   try {
-    let { name, source_path, target_remote, target_path, mode = 'copy', cron_schedule, enabled = 1, conflict_mode = 'smart', priority, bw_limit = '' } = req.body;
+    let { name, source_path, target_remote, target_path, mode = 'copy', cron_schedule, enabled = 1, conflict_mode = 'smart', priority, bw_limit = '', realtime_watch = 0, encrypt_backup = 0 } = req.body;
 
     if (Array.isArray(source_path)) {
       source_path = JSON.stringify(source_path);
@@ -833,9 +903,9 @@ app.post('/api/tasks', async (req, res) => {
 
     const id = uuidv4();
     await db.run(
-      `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, name, source_path, target_remote, target_path || '', mode, cron_schedule, enabled ? 1 : 0, conflict_mode, taskPriority, bw_limit]
+      `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, name, source_path, target_remote, target_path || '', mode, cron_schedule, enabled ? 1 : 0, conflict_mode, taskPriority, bw_limit, realtime_watch ? 1 : 0, encrypt_backup ? 1 : 0]
     );
 
     const newTask = await db.get('SELECT * FROM tasks WHERE id = ?', [id]);
@@ -857,7 +927,7 @@ app.post('/api/tasks', async (req, res) => {
 app.put('/api/tasks/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    let { name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit } = req.body;
+    let { name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup } = req.body;
 
     if (Array.isArray(source_path)) {
       source_path = JSON.stringify(source_path);
@@ -881,9 +951,11 @@ app.put('/api/tasks/:id', async (req, res) => {
         enabled = COALESCE(?, enabled),
         conflict_mode = COALESCE(?, conflict_mode),
         priority = COALESCE(?, priority),
-        bw_limit = COALESCE(?, bw_limit)
+        bw_limit = COALESCE(?, bw_limit),
+        realtime_watch = COALESCE(?, realtime_watch),
+        encrypt_backup = COALESCE(?, encrypt_backup)
        WHERE id = ?`,
-      [name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, taskPriority, bw_limit, id]
+      [name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, taskPriority, bw_limit, realtime_watch !== undefined ? (realtime_watch ? 1 : 0) : existing.realtime_watch, encrypt_backup !== undefined ? (encrypt_backup ? 1 : 0) : existing.encrypt_backup, id]
     );
 
     const updatedTask = await db.get('SELECT * FROM tasks WHERE id = ?', [id]);
@@ -917,15 +989,103 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 /**
- * Trigger manual execution of a task (non-blocking)
+ * Trigger manual execution of a task (non-blocking, supports partial folder & item selection)
  */
 app.post('/api/tasks/:id/run', (req, res) => {
   try {
     const { id } = req.params;
-    scheduler.executeTask(id, false).catch(err => {
+    const selectedSources = req.body && Array.isArray(req.body.selected_sources) ? req.body.selected_sources : null;
+    const subPaths = req.body && Array.isArray(req.body.sub_paths) ? req.body.sub_paths : null;
+    scheduler.executeTask(id, false, { selectedSources, subPaths }).catch(err => {
       console.error(`[Task Execution Error] Task ${id}:`, err);
     });
     res.json({ success: true, message: `Task ${id} execution started.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get detailed breakdown of task sources with resolved paths & immediate items for granular partial backups
+ */
+app.get('/api/tasks/:id/sources-detail', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const task = await db.get('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    const rawSources = rclone.parseSourcePaths(task.source_path);
+    const dbSources = await db.all('SELECT * FROM sources');
+    const sourceMap = {};
+    for (const s of dbSources) {
+      if (s.container_path) sourceMap[s.container_path.trim().toLowerCase()] = s;
+    }
+
+    const details = [];
+    for (const raw of rawSources) {
+      const resolved = rclone.resolveSourcePath(raw);
+      const exists = fs.existsSync(resolved);
+      const match = sourceMap[raw.trim().toLowerCase()];
+      const friendlyName = match ? match.name : path.basename(resolved || raw);
+
+      // Inspect immediate items inside this folder for granular item selection
+      let items = [];
+      if (exists) {
+        try {
+          const dirents = fs.readdirSync(resolved, { withFileTypes: true });
+          items = dirents.slice(0, 100).map(d => ({
+            name: d.name,
+            isDir: d.isDirectory(),
+            relPath: d.name
+          }));
+        } catch (e) {}
+      }
+
+      details.push({
+        raw,
+        resolved,
+        name: friendlyName,
+        exists,
+        items
+      });
+    }
+
+    res.json({
+      taskId: task.id,
+      taskName: task.name,
+      targetRemote: task.target_remote,
+      targetPath: task.target_path,
+      isMultiFolder: rawSources.length > 1,
+      sources: details
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Pause a running backup task
+ */
+app.post('/api/tasks/:id/pause', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await scheduler.pauseTask(id, 'user');
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Resume a paused backup task
+ */
+app.post('/api/tasks/:id/resume', async (req, res) => {
+  try {
+    const { id } = req.params;
+    scheduler.resumeTask(id).catch(err => {
+      console.error(`[Task Resume Error] Task ${id}:`, err);
+    });
+    res.json({ success: true, message: `Task ${id} resumed.` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -967,6 +1127,141 @@ app.post('/api/transfer/:id/stop', (req, res) => {
     const { id } = req.params;
     const stopped = rclone.cancelBackupTask(id);
     res.json({ success: true, stopped, id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get failed/skipped files for a specific task
+ */
+app.get('/api/tasks/:id/failed-files', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const items = await db.all(
+      `SELECT * FROM failed_files WHERE task_id = ? AND status = 'pending' ORDER BY created_at DESC`,
+      [id]
+    );
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Get all unresolved failed files across all tasks
+ */
+app.get('/api/failed-files', async (req, res) => {
+  try {
+    const items = await db.all(
+      `SELECT * FROM failed_files WHERE status = 'pending' ORDER BY created_at DESC`
+    );
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Retry only the failed files for a specific task
+ */
+app.post('/api/tasks/:id/retry-failed', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const task = await db.get('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    const failedItems = await db.all(
+      `SELECT * FROM failed_files WHERE task_id = ? AND status = 'pending'`,
+      [id]
+    );
+
+    if (failedItems.length === 0) {
+      return res.json({ success: true, message: 'No pending failed files to retry.', resolvedCount: 0 });
+    }
+
+    scheduler.broadcast('task_started', {
+      taskId: task.id,
+      taskName: `${task.name} (Retry ${failedItems.length} Failed Files)`,
+      logId: 'retry-' + Date.now()
+    });
+
+    // Run targeted retry in background
+    (async () => {
+      try {
+        const retryResult = await rclone.retryFailedFiles(
+          task,
+          failedItems,
+          (prog) => scheduler.broadcast('task_progress', { taskId: task.id, progressText: prog }),
+          (line) => scheduler.broadcast('task_log', { taskId: task.id, logLine: line })
+        );
+
+        if (retryResult.resolvedFiles && retryResult.resolvedFiles.length > 0) {
+          for (const resolved of retryResult.resolvedFiles) {
+            await db.run(
+              `UPDATE failed_files SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`,
+              [resolved.id]
+            );
+          }
+        }
+
+        const remaining = await db.get(
+          `SELECT COUNT(*) as cnt FROM failed_files WHERE task_id = ? AND status = 'pending'`,
+          [task.id]
+        );
+
+        const newStatus = (remaining && remaining.cnt === 0) ? 'success' : 'partial';
+        await db.run(`UPDATE tasks SET last_status = ? WHERE id = ?`, [newStatus, task.id]);
+
+        scheduler.broadcast('task_finished', {
+          taskId: task.id,
+          taskName: task.name,
+          status: newStatus,
+          bytesTransferred: 'Targeted Retry Complete'
+        });
+      } catch (retryErr) {
+        console.error('[Targeted Retry Error]', retryErr);
+      }
+    })();
+
+    res.json({
+      success: true,
+      message: `Targeted retry launched for ${failedItems.length} file(s).`,
+      count: failedItems.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Dismiss all failed files for a task
+ */
+app.post('/api/tasks/:id/dismiss-failed', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.run(
+      `UPDATE failed_files SET status = 'dismissed', resolved_at = CURRENT_TIMESTAMP WHERE task_id = ? AND status = 'pending'`,
+      [id]
+    );
+    await db.run(`UPDATE tasks SET last_status = 'idle' WHERE id = ? AND last_status = 'partial'`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Dismiss a single failed file
+ */
+app.post('/api/failed-files/:id/dismiss', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.run(
+      `UPDATE failed_files SET status = 'dismissed', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
+    );
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1031,26 +1326,264 @@ app.get('/api/settings', async (req, res) => {
  */
 app.post('/api/settings', async (req, res) => {
   try {
-    const { discord_webhook_url, ntfy_topic, telegram_bot_token, telegram_chat_id, device_name } = req.body;
+    const {
+      discord_webhook_url,
+      ntfy_topic,
+      telegram_bot_token,
+      telegram_chat_id,
+      device_name,
+      encryption_enabled,
+      encryption_password,
+      encryption_salt,
+      encrypt_filenames,
+      encrypt_directory_names
+    } = req.body;
 
     if (device_name !== undefined) {
-      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['device_name', device_name.trim()]);
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['device_name', String(device_name).trim()]);
     }
     if (discord_webhook_url !== undefined) {
-      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['discord_webhook_url', discord_webhook_url.trim()]);
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['discord_webhook_url', String(discord_webhook_url).trim()]);
     }
     if (ntfy_topic !== undefined) {
-      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['ntfy_topic', ntfy_topic.trim()]);
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['ntfy_topic', String(ntfy_topic).trim()]);
     }
     if (telegram_bot_token !== undefined) {
-      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['telegram_bot_token', telegram_bot_token.trim()]);
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['telegram_bot_token', String(telegram_bot_token).trim()]);
     }
     if (telegram_chat_id !== undefined) {
-      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['telegram_chat_id', telegram_chat_id.trim()]);
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['telegram_chat_id', String(telegram_chat_id).trim()]);
+    }
+    if (encryption_enabled !== undefined) {
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['encryption_enabled', encryption_enabled ? 'true' : 'false']);
+    }
+    if (encryption_password !== undefined) {
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['encryption_password', String(encryption_password).trim()]);
+    }
+    if (encryption_salt !== undefined) {
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['encryption_salt', String(encryption_salt).trim()]);
+    }
+    if (encrypt_filenames !== undefined) {
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['encrypt_filenames', String(encrypt_filenames)]);
+    }
+    if (encrypt_directory_names !== undefined) {
+      await db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['encrypt_directory_names', encrypt_directory_names ? 'true' : 'false']);
     }
 
     await saveCurrentConfigSnapshot().catch(() => {});
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Publish .exe and Docker container release to Discord
+ */
+app.post('/api/settings/publish-discord-release', async (req, res) => {
+  try {
+    const pkg = require('../package.json');
+    const { version = pkg.version, notes, exeUrl, portableExeUrl, dockerCommand } = req.body;
+    const result = await scheduler.publishReleaseToDiscord({ version, notes, exeUrl, portableExeUrl, dockerCommand });
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Get device pairing & network information for iOS, Android, and web linking
+ */
+app.get('/api/network/pairing-info', async (req, res) => {
+  try {
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
+    for (const name of Object.keys(interfaces)) {
+      for (const net of interfaces[name]) {
+        // Skip internal (127.0.0.1) and non-IPv4 addresses
+        if (net.family === 'IPv4' && !net.internal) {
+          addresses.push({ interface: name, address: net.address });
+        }
+      }
+    }
+
+    const deviceRow = await db.get('SELECT value FROM settings WHERE key = ?', ['device_name']);
+    const deviceName = deviceRow ? deviceRow.value : (os.hostname() || 'AutoBackup-Hub');
+    const port = process.env.PORT || 3000;
+    const primaryIp = addresses.length > 0 ? addresses[0].address : 'localhost';
+    const pairingUrl = `http://${primaryIp}:${port}`;
+
+    res.json({
+      deviceName,
+      port,
+      primaryIp,
+      pairingUrl,
+      addresses,
+      platform: process.platform
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// In-Memory store for active 6-digit device pairing codes (Host -> Tablet/Client)
+const activePairingCodes = new Map(); // rawCode -> { rawCode, code, createdAt, expiresAt, deviceName, addresses }
+
+function cleanupExpiredPairingCodes() {
+  const now = Date.now();
+  for (const [code, info] of activePairingCodes.entries()) {
+    if (now > info.expiresAt) {
+      activePairingCodes.delete(code);
+    }
+  }
+}
+
+function generateNumericPairingCode() {
+  cleanupExpiredPairingCodes();
+  // Generate 6-digit numeric code like "748291"
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/**
+ * Generate or get active 6-digit pairing code for device linking
+ */
+app.get('/api/network/pairing-code', async (req, res) => {
+  try {
+    cleanupExpiredPairingCodes();
+    let codeObj = null;
+    for (const info of activePairingCodes.values()) {
+      if (Date.now() < info.expiresAt) {
+        codeObj = info;
+        break;
+      }
+    }
+
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
+    for (const name of Object.keys(interfaces)) {
+      for (const net of interfaces[name]) {
+        if (net.family === 'IPv4' && !net.internal) {
+          addresses.push({ interface: name, address: net.address });
+        }
+      }
+    }
+    const port = process.env.PORT || 3000;
+    const primaryIp = addresses.length > 0 ? addresses[0].address : 'localhost';
+    const pairingUrl = `http://${primaryIp}:${port}`;
+
+    const deviceRow = await db.get('SELECT value FROM settings WHERE key = ?', ['device_name']);
+    const deviceName = deviceRow ? deviceRow.value : (os.hostname() || 'AutoBackup-Host');
+
+    if (!codeObj || req.query.refresh === '1') {
+      const rawCode = generateNumericPairingCode();
+      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 minutes TTL
+      codeObj = {
+        rawCode,
+        code: `${rawCode.slice(0, 3)}-${rawCode.slice(3)}`,
+        createdAt: Date.now(),
+        expiresAt,
+        deviceName,
+        addresses,
+        primaryIp,
+        port,
+        pairingUrl
+      };
+      activePairingCodes.set(rawCode, codeObj);
+    }
+
+    const remainingSeconds = Math.max(0, Math.round((codeObj.expiresAt - Date.now()) / 1000));
+
+    res.json({
+      success: true,
+      code: codeObj.code,
+      rawCode: codeObj.rawCode,
+      expiresAt: codeObj.expiresAt,
+      remainingSeconds,
+      deviceName,
+      addresses,
+      primaryIp,
+      port,
+      pairingUrl,
+      firewallCommand: `powershell -Command "New-NetFirewallRule -DisplayName 'AutoBackup' -Direction Inbound -LocalPort ${port} -Protocol TCP -Action Allow"`
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Verify 6-digit pairing code entered on tablet/phone and link the device
+ */
+app.post('/api/network/verify-pairing-code', async (req, res) => {
+  try {
+    cleanupExpiredPairingCodes();
+    const { code, clientDeviceName, platform } = req.body || {};
+    if (!code) {
+      return res.status(400).json({ success: false, error: 'Pairing code is required.' });
+    }
+    const cleanCode = String(code).replace(/[^0-9]/g, '');
+    const entry = activePairingCodes.get(cleanCode);
+
+    if (!entry || Date.now() > entry.expiresAt) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired pairing code. Please generate a fresh code on your host PC.'
+      });
+    }
+
+    // Issue client auth token & register linked device
+    const { v4: uuidv4 } = require('uuid');
+    const token = 'dev_' + uuidv4().replace(/-/g, '');
+    const id = 'device_' + uuidv4().slice(0, 8);
+    const name = clientDeviceName || (platform ? `${platform} Tablet` : 'Linked Mobile Device');
+    const clientIp = req.ip || req.connection.remoteAddress || '';
+
+    await db.run(
+      `INSERT INTO linked_devices (id, device_name, platform, ip_address, token, linked_at, last_active)
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [id, name, platform || 'tablet', clientIp, token]
+    );
+
+    // Remove single-use pairing code
+    activePairingCodes.delete(cleanCode);
+
+    res.json({
+      success: true,
+      message: 'Tablet/device successfully linked to AutoBackup!',
+      token,
+      deviceId: id,
+      hostDeviceName: entry.deviceName,
+      deviceName: name
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * List all linked devices
+ */
+app.get('/api/network/linked-devices', async (req, res) => {
+  try {
+    const devices = await db.all('SELECT id, device_name, platform, ip_address, linked_at, last_active FROM linked_devices ORDER BY linked_at DESC');
+    res.json({ success: true, devices });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Unlink / Revoke a connected device
+ */
+app.delete('/api/network/linked-devices/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.run('DELETE FROM linked_devices WHERE id = ?', [id]);
+    res.json({ success: true, message: 'Device unlinked successfully.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1904,34 +2437,49 @@ app.use('/api', (err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    const fallbackPort = Number(PORT) + 1;
+    console.warn(`[AutoBackup] Port ${PORT} already in use. Retrying on fallback port ${fallbackPort}...`);
+    server.listen(fallbackPort, () => {
+      console.log(`[AutoBackup] Server running on http://localhost:${fallbackPort}`);
+      process.env.PORT = fallbackPort;
+      rclone.prewarmRemoteAboutCache().catch(() => {});
+    });
+  } else {
+    console.error('[AutoBackup] Server listen error:', err);
+  }
+});
+
 server.listen(PORT, () => {
-  console.log(`[AutoBackup Hub] Server running on http://localhost:${PORT}`);
+  console.log(`[AutoBackup] Server running on http://localhost:${PORT}`);
   // Pre-warm capacity quota metrics for all connected remotes on startup
   rclone.prewarmRemoteAboutCache().catch(() => {});
 });
 
 // Process safety: prevent sudden crashes on unhandled rejections
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[AutoBackup Hub] Unhandled Promise Rejection:', reason);
+  console.error('[AutoBackup] Unhandled Promise Rejection:', reason);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('[AutoBackup Hub] Uncaught Exception:', err);
+  console.error('[AutoBackup] Uncaught Exception:', err);
 });
 
 // Graceful shutdown handling
 function gracefulShutdown(signal) {
-  console.log(`[AutoBackup Hub] Received ${signal}. Shutting down gracefully...`);
+  console.log(`[AutoBackup] Received ${signal}. Shutting down gracefully...`);
   clearInterval(wsHeartbeatInterval);
   for (const client of connectedSockets) {
     try { client.close(1001, 'Server shutting down'); } catch (e) {}
   }
   server.close(() => {
-    console.log('[AutoBackup Hub] HTTP & WebSocket servers closed.');
+    console.log('[AutoBackup] HTTP & WebSocket servers closed.');
     process.exit(0);
   });
   setTimeout(() => {
-    console.error('[AutoBackup Hub] Forced shutdown after timeout.');
+    console.error('[AutoBackup] Forced shutdown after timeout.');
     process.exit(1);
   }, 10000);
 }

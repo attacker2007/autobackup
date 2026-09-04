@@ -37,6 +37,31 @@ function getRcloneBinaryPath() {
   return process.platform === 'win32' ? 'rclone.exe' : 'rclone';
 }
 
+let sourcesPathCache = {};
+let sourcesPathCacheTime = 0;
+
+/**
+ * Refresh in-memory mapping from sources table in database
+ */
+async function refreshSourcesPathCache() {
+  try {
+    const dbHelper = require('./db');
+    const rows = await dbHelper.all('SELECT container_path, host_path, name FROM sources');
+    const newMap = {};
+    for (const r of rows) {
+      if (r.container_path && r.host_path) {
+        newMap[r.container_path.trim().toLowerCase()] = r.host_path.trim();
+        newMap[r.container_path.trim()] = r.host_path.trim();
+      }
+    }
+    sourcesPathCache = newMap;
+    sourcesPathCacheTime = Date.now();
+  } catch (e) {}
+}
+
+// Preload cache asynchronously
+refreshSourcesPathCache().catch(() => {});
+
 /**
  * Resolves a source path, seamlessly mapping legacy container paths (/hostfs/F/..., /Documents/Important)
  * to native Windows drive paths if running natively on Windows.
@@ -45,25 +70,45 @@ function resolveSourcePath(rawPath) {
   if (!rawPath) return rawPath;
   let normalized = rawPath.replace(/\\/g, '/');
 
+  // Direct native existence check
   if (fs.existsSync(normalized) || fs.existsSync(rawPath)) {
     return rawPath;
   }
 
+  // 1. Convert Docker container host mounts (/hostfs/F/foo -> F:/foo)
   const hostfsMatch = normalized.match(/^\/hostfs\/([A-Za-z])(?:\/(.*))?$/);
   if (hostfsMatch) {
     const drive = hostfsMatch[1].toUpperCase();
     const rest = hostfsMatch[2] || '';
     const winPath = rest ? `${drive}:/${rest}` : `${drive}:/`;
-    if (fs.existsSync(winPath)) return winPath;
     return winPath;
   }
 
+  // 2. Check dynamic database sources table mapping
+  const lowNorm = normalized.toLowerCase();
+  if (sourcesPathCache[lowNorm]) {
+    const mapped = sourcesPathCache[lowNorm].replace(/\\/g, '/');
+    return mapped;
+  }
+  if (sourcesPathCache[rawPath]) {
+    const mapped = sourcesPathCache[rawPath].replace(/\\/g, '/');
+    return mapped;
+  }
+
+  // 3. Check Windows user profile standard folders & OneDrive redirects
   if (process.platform === 'win32' && process.env.USERPROFILE) {
     const userProfile = process.env.USERPROFILE.replace(/\\/g, '/');
+    
+    // Check if OneDrive redirects exist
+    const oneDriveDocs = `${userProfile}/OneDrive/Documents`;
+    const oneDrivePics = `${userProfile}/OneDrive/Pictures`;
+    const localDocs = `${userProfile}/Documents`;
+    const localPics = `${userProfile}/Pictures`;
+
     const directMappings = {
-      '/Documents/Important': `${userProfile}/Documents/Important`,
-      '/Documents/Others': `${userProfile}/OneDrive/Documents`,
-      '/Pictures': `${userProfile}/OneDrive/Pictures`,
+      '/Documents/Important': fs.existsSync(`${localDocs}/Important`) ? `${localDocs}/Important` : `${oneDriveDocs}/Important`,
+      '/Documents/Others': fs.existsSync(oneDriveDocs) ? oneDriveDocs : localDocs,
+      '/Pictures': fs.existsSync(oneDrivePics) ? oneDrivePics : localPics,
       '/Work/MST': `${userProfile}/Downloads/product-catalog-node_5_1`,
       '/Code/espsniffer': `${userProfile}/Downloads/esp32_sniffer`,
       '/Games/Pokemon/SolarEclipse': `${userProfile}/Downloads/Solar Eclipse (v1.9.0)`,
@@ -72,7 +117,7 @@ function resolveSourcePath(rawPath) {
       '/Code/wlancomm': 'F:/interwlancommunicator'
     };
 
-    if (directMappings[normalized] && fs.existsSync(directMappings[normalized])) {
+    if (directMappings[normalized]) {
       return directMappings[normalized];
     }
   }
@@ -281,6 +326,7 @@ function sanitizeAndWriteRcloneConfig(rawContent) {
   });
 
   // Write config file
+  const finalContent = sanitizedLines.join('\n');
   fs.writeFileSync(RCLONE_CONFIG_PATH, finalContent, 'utf8');
 }
 
@@ -425,19 +471,35 @@ function parseSourcePaths(sourcePathInput) {
   return [trimmed];
 }
 
-// Map tracking active task processes for cancellation: taskId -> childProcess
-const activeTaskProcesses = new Map();
+const activeTaskProcesses = new Map(); // taskId -> childProcess
+const pausedTasks = new Set(); // taskId -> boolean
+const cancelledTasks = new Set(); // taskId -> boolean
 
 /**
- * Cancel/Kill a running task process
+ * Robustly kill a process and all its children on Windows/Unix
  */
-function cancelBackupTask(taskId) {
+function killProcessTree(child) {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      const { execSync } = require('child_process');
+      execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch (e) {
+    try { child.kill('SIGKILL'); } catch (err) {}
+  }
+}
+
+/**
+ * Pause a running backup task gracefully
+ */
+function pauseBackupTask(taskId) {
+  pausedTasks.add(taskId);
   if (activeTaskProcesses.has(taskId)) {
     const child = activeTaskProcesses.get(taskId);
-    try {
-      child.kill('SIGTERM');
-      child.kill('SIGKILL');
-    } catch (e) {}
+    killProcessTree(child);
     activeTaskProcesses.delete(taskId);
     return true;
   }
@@ -445,9 +507,175 @@ function cancelBackupTask(taskId) {
 }
 
 /**
+ * Resume/Unpause a backup task
+ */
+function unpauseTask(taskId) {
+  pausedTasks.delete(taskId);
+}
+
+/**
+ * Check if a task is currently flagged as paused
+ */
+function isTaskPaused(taskId) {
+  return pausedTasks.has(taskId);
+}
+
+/**
+ * Check if a task is currently flagged as cancelled
+ */
+function isTaskCancelled(taskId) {
+  return cancelledTasks.has(taskId);
+}
+
+/**
+ * Clear cancellation flag for a task
+ */
+function clearTaskCancelled(taskId) {
+  cancelledTasks.delete(taskId);
+}
+
+/**
+ * Obscure a plaintext password using rclone binary
+ */
+function obscurePassword(password) {
+  if (!password) return '';
+  try {
+    const { execFileSync } = require('child_process');
+    const rcloneBin = getRcloneBinaryPath();
+    const stdout = execFileSync(rcloneBin, ['obscure', password], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    return stdout ? stdout.trim() : '';
+  } catch (err) {
+    console.error('[Rclone] Failed to obscure password:', err.message);
+    return password;
+  }
+}
+
+/**
+ * Ensure an rclone crypt wrapper remote exists in rclone.conf
+ * e.g. for remote "abdul_GDrive", creates or updates [crypt_abdul_GDrive]
+ */
+function ensureCryptRemote(baseRemote, password, salt = '', options = {}) {
+  if (!baseRemote || !password) return baseRemote;
+
+  const cryptRemoteName = `crypt_${baseRemote}`;
+  const obscuredPassword = obscurePassword(password);
+  const obscuredSalt = salt ? obscurePassword(salt) : '';
+
+  const filenameEncryption = options.filenameEncryption || 'standard';
+  const directoryNameEncryption = options.directoryNameEncryption !== false ? 'true' : 'false';
+
+  let configContent = '';
+  if (fs.existsSync(RCLONE_CONFIG_PATH)) {
+    configContent = fs.readFileSync(RCLONE_CONFIG_PATH, 'utf8');
+  }
+
+  const sectionHeader = `[${cryptRemoteName}]`;
+  const blockLines = [
+    `[${cryptRemoteName}]`,
+    `type = crypt`,
+    `remote = ${baseRemote}:encrypted_vault`,
+    `password = ${obscuredPassword}`,
+    obscuredSalt ? `password2 = ${obscuredSalt}` : '',
+    `filename_encryption = ${filenameEncryption}`,
+    `directory_name_encryption = ${directoryNameEncryption}`
+  ].filter(Boolean).join('\n');
+
+  if (configContent.includes(sectionHeader)) {
+    const regex = new RegExp(`\\[${cryptRemoteName}\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');
+    configContent = configContent.replace(regex, blockLines + '\n');
+  } else {
+    configContent = configContent.trim() + '\n\n' + blockLines + '\n';
+  }
+
+  sanitizeAndWriteRcloneConfig(configContent);
+  console.log(`[Encryption] 🔒 Ensured crypt wrapper remote "${cryptRemoteName}" for base "${baseRemote}"`);
+  return cryptRemoteName;
+}
+
+/**
+ * Cancel/Kill a running task process
+ */
+function cancelBackupTask(taskId) {
+  pausedTasks.delete(taskId);
+  cancelledTasks.add(taskId);
+  let wasRunning = false;
+  if (activeTaskProcesses.has(taskId)) {
+    const child = activeTaskProcesses.get(taskId);
+    killProcessTree(child);
+    activeTaskProcesses.delete(taskId);
+    wasRunning = true;
+  }
+  return wasRunning;
+}
+
+/**
+ * Helper to parse speed strings like '45.2 KiB/s' or '3.1 MiB/s' to KiB/s
+ */
+function parseSpeedToKiB(spdStr) {
+  if (!spdStr) return 0;
+  const m = spdStr.match(/([0-9.]+)\s*([a-zA-Z]+)\/s/i);
+  if (!m) return 0;
+  const num = parseFloat(m[1]);
+  const unit = m[2].toUpperCase();
+  if (unit.startsWith('G')) return num * 1024 * 1024;
+  if (unit.startsWith('M')) return num * 1024;
+  if (unit.startsWith('K')) return num;
+  return num / 1024;
+}
+
+/**
+ * Extract individual failed file records from rclone output log
+ */
+function extractFailedFiles(logText, sourcePath = '') {
+  if (!logText) return [];
+  const failed = [];
+  const lines = logText.split('\n');
+
+  for (const line of lines) {
+    const errorMatch = line.match(/ERROR\s*:\s*([^:\r\n]+?)\s*:\s*(?:Failed to (?:copy|sync|move|open|transfer)|corrupted on transfer)\s*:\s*([^\r\n]+)/i);
+    if (errorMatch) {
+      let relPath = errorMatch[1].trim();
+      let reason = errorMatch[2].trim();
+
+      // Skip non-file logs or system warnings
+      if (!relPath || relPath.startsWith('rclone:') || relPath.toLowerCase().includes('fatal error') || relPath.toLowerCase().startsWith('attempt ') || relPath === 'Failed to copy') {
+        continue;
+      }
+
+      // Clean up common Windows error messages
+      if (reason.includes('used by another process') || reason.includes('being used')) {
+        reason = 'File in use / locked by another application';
+      } else if (reason.includes('Access is denied') || reason.includes('permission denied') || reason.includes('access is denied')) {
+        reason = 'Access denied / permission error';
+      } else if (reason.includes('file name too long')) {
+        reason = 'File path too long for Windows API';
+      } else if (reason.includes('quota') || reason.includes('storage limit')) {
+        reason = 'Cloud storage quota exceeded';
+      } else if (reason.includes('rateLimitExceeded') || reason.includes('userRateLimitExceeded')) {
+        reason = 'Cloud provider API rate limit exceeded';
+      }
+
+      if (!failed.some(item => item.filePath.toLowerCase() === relPath.toLowerCase())) {
+        failed.push({
+          filePath: relPath,
+          errorReason: reason,
+          sourcePath: sourcePath || ''
+        });
+      }
+    }
+  }
+
+  return failed;
+}
+
+/**
  * Execute a single rclone command for a given source path and destination
  */
-function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, onProgress, onLog, taskId = null, bwLimit = '', isDryRun = false) {
+function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, onProgress, onLog, taskId = null, bwLimit = '', isDryRun = false, options = {}) {
   return new Promise((resolve) => {
     const args = [
       '--config', RCLONE_CONFIG_PATH,
@@ -457,14 +685,26 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
       '-v',
       '-P',
       '--stats', '1s',
-      '--transfers', '12',
-      '--checkers', '24',
+      '--transfers', '4',
+      '--checkers', '8',
       '--drive-chunk-size', '64M',
-      '--buffer-size', '64M',
+      '--buffer-size', '16M',
       '--use-mmap',
       '--multi-thread-streams', '4',
-      '--fast-list'
+      '--multi-thread-cutoff', '64M',
+      '--max-backlog', '200000',
+      '--fast-list',
+      '--ignore-errors',
+      '--timeout', '30s',
+      '--contimeout', '15s',
+      '--low-level-retries', '10',
+      '--retries', '2',
+      '--retries-sleep', '2s'
     ];
+
+    if (options && options.filesFrom && fs.existsSync(options.filesFrom)) {
+      args.push('--files-from-raw', options.filesFrom);
+    }
 
     if (bwLimit && bwLimit !== 'unlimited') {
       args.push('--bwlimit', bwLimit);
@@ -502,13 +742,17 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
 
     const rcloneBin = getRcloneBinaryPath();
     const child = spawn(rcloneBin, args, {
-      shell: true,
+      shell: false,
+      windowsHide: true,
       env: { ...process.env, RCLONE_CONFIG: RCLONE_CONFIG_PATH }
     });
 
     if (taskId) {
       activeTaskProcesses.set(taskId, child);
     }
+
+    let consecutiveSlowCount = 0;
+    let slowdownWarningSent = false;
 
     const handleData = (data) => {
       const text = data.toString();
@@ -523,6 +767,20 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
       const parsedSpd = extractCurrentSpeed(text);
       if (parsedSpd) {
         lastParsedSpeed = parsedSpd;
+        const kib = parseSpeedToKiB(parsedSpd);
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        if (elapsedSec > 10 && kib < 30) {
+          consecutiveSlowCount++;
+          if (consecutiveSlowCount >= 5 && !slowdownWarningSent) {
+            slowdownWarningSent = true;
+            const slowNotice = `\n⚠️ [AutoBackup Network Watchdog] Network speed dropped significantly (${parsedSpd}). Rclone retry buffers active.\n`;
+            onLog && onLog(slowNotice);
+            options.onSlowdown && options.onSlowdown({ speed: parsedSpd, taskId });
+          }
+        } else if (kib >= 60) {
+          consecutiveSlowCount = 0;
+          slowdownWarningSent = false;
+        }
       }
 
       if (text.includes('Transferred:')) {
@@ -536,7 +794,31 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
     child.on('close', (code) => {
       if (taskId) activeTaskProcesses.delete(taskId);
 
-      const success = (code === 0);
+      if (taskId && cancelledTasks.has(taskId)) {
+        resolve({
+          success: false,
+          isStopped: true,
+          failedFiles: [],
+          exitCode: 0,
+          output: fullLog + '\n[Task execution stopped by user]',
+          bytesTransferred: lastValidTransferred,
+          speed: '0 B/s',
+          durationSec: Math.max(1, (Date.now() - startTime) / 1000)
+        });
+        return;
+      }
+
+      const failedFiles = extractFailedFiles(fullLog, sourcePath);
+      let success = (code === 0);
+      let isPartial = false;
+
+      // If rclone exited with error (e.g. code 1, 6, 9) due to individual locked/failed files,
+      // treat as PARTIAL success so the task is NOT discarded!
+      if (!success && failedFiles.length > 0) {
+        isPartial = true;
+        success = true;
+      }
+
       const durationSec = Math.max(1, (Date.now() - startTime) / 1000);
 
       const matches = [...fullLog.matchAll(/Transferred:\s+([0-9.]+\s*(?:KiB|MiB|GiB|TiB|B|Bytes|MB|GB|KB))/gi)];
@@ -549,6 +831,8 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
 
       resolve({
         success,
+        isPartial,
+        failedFiles,
         exitCode: code,
         output: fullLog,
         bytesTransferred: lastValidTransferred,
@@ -560,16 +844,31 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
     child.on('error', (err) => {
       if (taskId) activeTaskProcesses.delete(taskId);
 
+      if (taskId && cancelledTasks.has(taskId)) {
+        resolve({
+          success: false,
+          isStopped: true,
+          failedFiles: [],
+          exitCode: 0,
+          output: fullLog + '\n[Task execution stopped by user]',
+          bytesTransferred: lastValidTransferred,
+          speed: '0 B/s',
+          durationSec: Math.max(1, (Date.now() - startTime) / 1000)
+        });
+        return;
+      }
+
       const errMsg = `Error spawning rclone process: ${err.message}\n`;
       fullLog += errMsg;
       onLog && onLog(errMsg);
       resolve({
         success: false,
+        isPartial: false,
+        failedFiles: [],
         exitCode: -1,
         output: fullLog,
         bytesTransferred: lastValidTransferred,
         speed: '0 B/s',
-        durationSec: 1
       });
     });
   });
@@ -596,17 +895,75 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
     return { success: false, exitCode: -1, output: err, bytesTransferred: '0 B', filesTransferred: 0 };
   }
 
-  const sources = parseSourcePaths(source_path);
+  const allOriginalSources = parseSourcePaths(source_path);
+  let sources = [...allOriginalSources];
+  const isMultiFolderTask = (allOriginalSources.length > 1);
+
+  if (Array.isArray(options.selectedSources) && options.selectedSources.length > 0) {
+    const rawFilter = options.selectedSources.map(s => String(s).trim().toLowerCase());
+    const filtered = sources.filter(s => {
+      const low = s.trim().toLowerCase();
+      const resolved = resolveSourcePath(s).trim().toLowerCase();
+      const bname = path.basename(low);
+      const resBname = path.basename(resolved);
+      return rawFilter.some(sel => {
+        const sTrim = sel.trim();
+        return low === sTrim || resolved === sTrim || bname === sTrim || resBname === sTrim || low.includes(sTrim) || resolved.includes(sTrim);
+      });
+    });
+    if (filtered.length > 0) {
+      sources = filtered;
+      onLog && onLog(`[Partial Task Execution] Running ${sources.length} selected folder(s) only.\n`);
+    }
+  }
+
   if (sources.length === 0) {
     const err = 'Error: No local source container paths specified for task.';
     onLog && onLog(`${err}\n`);
     return { success: false, exitCode: -1, output: err, bytesTransferred: '0 B', filesTransferred: 0 };
   }
 
+  // Handle granular subfolder/file partial backup via temporary files-from filter
+  let tempFilterFile = null;
+  if (Array.isArray(options.subPaths) && options.subPaths.length > 0) {
+    try {
+      const filterDir = path.join(CONFIG_DIR, 'downloads');
+      if (!fs.existsSync(filterDir)) fs.mkdirSync(filterDir, { recursive: true });
+      tempFilterFile = path.join(filterDir, `partial_${task.id || 'run'}_${Date.now()}.txt`);
+      const formattedLines = options.subPaths.map(p => String(p).trim().replace(/\\/g, '/')).filter(Boolean);
+      fs.writeFileSync(tempFilterFile, formattedLines.join('\n'), 'utf8');
+      options.filesFrom = tempFilterFile;
+      onLog && onLog(`[Partial Task Execution] Selective item filter engaged for ${formattedLines.length} item(s).\n`);
+    } catch (e) {
+      console.warn('[Rclone] Failed creating partial filter file:', e.message);
+    }
+  }
+
   const dryRunTag = isDryRun ? ' [DRY-RUN SIMULATION]' : '';
   const bwTag = bw_limit ? ` [Bandwidth Limit: ${bw_limit}]` : '';
 
-  onLog && onLog(`[AutoBackup Engine] Starting task "${task.name}" with ${sources.length} container folder(s)... [Mode: ${mode.toUpperCase()}] [Conflict: ${conflict_mode.toUpperCase()}]${bwTag}${dryRunTag}\n`);
+  // Zero-Knowledge Client-Side Encryption
+  let effectiveRemote = target_remote;
+  const isEncrypted = (task.encrypt_backup === 1) || (options.encryptBackup === true);
+  if (isEncrypted) {
+    try {
+      const dbHelper = require('./db');
+      const encPassRow = await dbHelper.get("SELECT value FROM settings WHERE key = 'encryption_password'");
+      const encSaltRow = await dbHelper.get("SELECT value FROM settings WHERE key = 'encryption_salt'");
+      const pass = encPassRow ? encPassRow.value : '';
+      const salt = encSaltRow ? encSaltRow.value : '';
+      if (pass) {
+        effectiveRemote = ensureCryptRemote(target_remote, pass, salt);
+        onLog && onLog(`[Encryption] 🔒 Zero-Knowledge Client-Side AES-256 Encryption active via "${effectiveRemote}"\n`);
+      } else {
+        onLog && onLog(`[Encryption Warning] ⚠️ Task has encryption enabled, but no Encryption Password is set in Settings. Proceeding with standard unencrypted remote.\n`);
+      }
+    } catch (e) {
+      console.warn('[Encryption] Failed checking encryption settings:', e.message);
+    }
+  }
+
+  onLog && onLog(`[AutoBackup Engine] Starting task "${task.name}" with ${sources.length} folder(s)... [Mode: ${mode.toUpperCase()}] [Conflict: ${conflict_mode.toUpperCase()}]${bwTag}${dryRunTag}\n`);
 
   let overallSuccess = true;
   let accumulatedLog = '';
@@ -614,25 +971,54 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   let totalBytesNum = 0;
   let totalDurationSec = 0;
   const failedSources = [];
+  const allFailedFiles = [];
+  let isAnyPartial = false;
 
   for (let i = 0; i < sources.length; i++) {
+    if (cancelledTasks.has(task.id)) {
+      cancelledTasks.delete(task.id);
+      if (tempFilterFile && fs.existsSync(tempFilterFile)) { try { fs.unlinkSync(tempFilterFile); } catch (e) {} }
+      onLog && onLog(`\n🛑 [Task Stopped] Backup task "${task.name}" execution was stopped by user.\n`);
+      return {
+        success: false,
+        isStopped: true,
+        exitCode: 0,
+        output: accumulatedLog + '\n[Task Stopped by User]',
+        bytesTransferred: totalBytesTransferredStr,
+        filesTransferred: i
+      };
+    }
+
+    if (pausedTasks.has(task.id)) {
+      if (tempFilterFile && fs.existsSync(tempFilterFile)) { try { fs.unlinkSync(tempFilterFile); } catch (e) {} }
+      onLog && onLog(`\n⏸️ [Task Paused] Backup task "${task.name}" was paused. State saved.\n`);
+      return {
+        success: false,
+        isPaused: true,
+        exitCode: 0,
+        output: accumulatedLog + '\n[Task Paused]',
+        bytesTransferred: totalBytesTransferredStr,
+        filesTransferred: i
+      };
+    }
+
     const rawSrcPath = sources[i];
     const srcPath = resolveSourcePath(rawSrcPath);
     
     // Compute target destination for this specific folder
     let destination;
-    if (sources.length === 1) {
-      destination = target_path ? `${target_remote}:${target_path}` : `${target_remote}:`;
+    if (!isMultiFolderTask && sources.length === 1) {
+      destination = target_path ? `${effectiveRemote}:${target_path}` : `${effectiveRemote}:`;
     } else {
       const folderName = path.basename(srcPath.replace(/[\\\/]+$/, '')) || `folder_${i + 1}`;
       const fullSubPath = target_path 
         ? `${target_path.replace(/[\\\/]+$/, '')}/${folderName}`
         : folderName;
-      destination = `${target_remote}:${fullSubPath}`;
+      destination = `${effectiveRemote}:${fullSubPath}`;
     }
 
     onLog && onLog(`\n=======================================================\n`);
-    onLog && onLog(`[Container ${i + 1}/${sources.length}] Backing up "${srcPath}" -> "${destination}"${dryRunTag}\n`);
+    onLog && onLog(`[Folder ${i + 1}/${sources.length}] Backing up "${srcPath}" -> "${destination}"${dryRunTag}\n`);
     onLog && onLog(`=======================================================\n`);
 
     // Check directory existence check
@@ -640,14 +1026,47 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
       onLog && onLog(`[Check Warning] Source path "${srcPath}" not directly found on local filesystem mount. Rclone will attempt remote sync...\n`);
     }
 
-    const res = await runSingleRcloneTransfer(mode, srcPath, destination, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun);
+    const res = await runSingleRcloneTransfer(mode, srcPath, destination, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun, options);
     accumulatedLog += res.output + '\n';
     totalDurationSec += res.durationSec;
+
+    if (res.isStopped || cancelledTasks.has(task.id)) {
+      cancelledTasks.delete(task.id);
+      if (tempFilterFile && fs.existsSync(tempFilterFile)) { try { fs.unlinkSync(tempFilterFile); } catch (e) {} }
+      onLog && onLog(`\n🛑 [Task Stopped] Backup task "${task.name}" execution was stopped by user.\n`);
+      return {
+        success: false,
+        isStopped: true,
+        exitCode: 0,
+        output: accumulatedLog + '\n[Task Stopped by User]',
+        bytesTransferred: totalBytesTransferredStr,
+        filesTransferred: i
+      };
+    }
+
+    if (res.failedFiles && res.failedFiles.length > 0) {
+      allFailedFiles.push(...res.failedFiles);
+      isAnyPartial = true;
+    }
+
+    if (pausedTasks.has(task.id)) {
+      onLog && onLog(`\n⏸️ [Task Paused] Backup task "${task.name}" execution paused. Progress preserved.\n`);
+      return {
+        success: false,
+        isPaused: true,
+        exitCode: 0,
+        output: accumulatedLog + '\n[Task Paused]',
+        bytesTransferred: totalBytesTransferredStr,
+        filesTransferred: i + (res.success ? 1 : 0)
+      };
+    }
 
     if (!res.success) {
       overallSuccess = false;
       failedSources.push(srcPath);
       onLog && onLog(`❌ [Container ${i + 1}/${sources.length}] Transfer failed for "${srcPath}" (Exit code ${res.exitCode}).\n`);
+    } else if (res.isPartial || (res.failedFiles && res.failedFiles.length > 0)) {
+      onLog && onLog(`⚠️ [Container ${i + 1}/${sources.length}] Container backup completed with ${res.failedFiles.length} skipped file(s). Remaining files secured.${dryRunTag}\n`);
     } else {
       onLog && onLog(`✅ [Container ${i + 1}/${sources.length}] Container backup completed successfully.${dryRunTag}\n`);
     }
@@ -687,14 +1106,109 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   if (failedSources.length > 0) {
     onLog && onLog(`Failed Containers: ${failedSources.join(', ')}\n`);
   }
-  onLog && onLog(`Total Transferred: ${totalBytesTransferredStr} | Average Speed: ${finalSpeedStr} | Total Time: ${totalDurationSec.toFixed(1)}s\n`);
+  if (allFailedFiles.length > 0) {
+    onLog && onLog(`Skipped / Failed Files: ${allFailedFiles.length} (Check "Failed Files" to retry or resolve)\n`);
+  }
+  if (tempFilterFile && fs.existsSync(tempFilterFile)) {
+    try { fs.unlinkSync(tempFilterFile); } catch (e) {}
+  }
 
   return {
     success: overallSuccess,
+    isPartial: isAnyPartial,
+    failedFiles: allFailedFiles,
     exitCode: overallSuccess ? 0 : -1,
     output: accumulatedLog,
     bytesTransferred: `${totalBytesTransferredStr} (${finalSpeedStr})`,
     filesTransferred: sources.length
+  };
+}
+
+/**
+ * Retry only specific failed files for a task using rclone's --files-from-raw
+ */
+async function retryFailedFiles(task, failedFileItems, onProgress, onLog) {
+  if (!failedFileItems || failedFileItems.length === 0) {
+    return { success: true, message: 'No failed files to retry.', resolvedFiles: [] };
+  }
+
+  const { target_remote, target_path } = task;
+  const scratchDir = path.join(CONFIG_DIR, 'scratch');
+  if (!fs.existsSync(scratchDir)) {
+    fs.mkdirSync(scratchDir, { recursive: true });
+  }
+
+  // Determine effective remote (crypt or standard)
+  let effectiveRemote = target_remote;
+  if (task.encrypt_backup === 1) {
+    try {
+      const dbHelper = require('./db');
+      const encPassRow = await dbHelper.get("SELECT value FROM settings WHERE key = 'encryption_password'");
+      const encSaltRow = await dbHelper.get("SELECT value FROM settings WHERE key = 'encryption_salt'");
+      const pass = encPassRow ? encPassRow.value : '';
+      const salt = encSaltRow ? encSaltRow.value : '';
+      if (pass) {
+        effectiveRemote = ensureCryptRemote(target_remote, pass, salt);
+      }
+    } catch (e) {}
+  }
+
+  // Group failed files by sourcePath
+  const bySource = new Map();
+  for (const item of failedFileItems) {
+    const sPath = item.source_path || (Array.isArray(task.source_path) ? task.source_path[0] : task.source_path);
+    const resolvedSrc = resolveSourcePath(sPath);
+    if (!bySource.has(resolvedSrc)) {
+      bySource.set(resolvedSrc, []);
+    }
+    bySource.get(resolvedSrc).push(item);
+  }
+
+  let totalResolved = [];
+  let overallSuccess = true;
+
+  for (const [srcPath, items] of bySource.entries()) {
+    const manifestFile = path.join(scratchDir, `retry_${task.id}_${Date.now()}.txt`);
+    const relPaths = items.map(it => it.file_path.replace(/\\/g, '/')).join('\n');
+    fs.writeFileSync(manifestFile, relPaths, 'utf8');
+
+    let destination = target_path ? `${effectiveRemote}:${target_path}` : `${effectiveRemote}:`;
+    if (Array.isArray(task.source_path) && task.source_path.length > 1) {
+      const folderName = path.basename(srcPath.replace(/[\\\/]+$/, ''));
+      const fullSubPath = target_path ? `${target_path.replace(/[\\\/]+$/, '')}/${folderName}` : folderName;
+      destination = `${effectiveRemote}:${fullSubPath}`;
+    }
+
+    onLog && onLog(`\n[Targeted Retry] Retrying ${items.length} previously failed file(s) for "${srcPath}" -> "${destination}"...\n`);
+
+    const res = await runSingleRcloneTransfer(
+      'copy',
+      srcPath,
+      destination,
+      'smart',
+      onProgress,
+      onLog,
+      task.id,
+      task.bw_limit || '',
+      false,
+      { filesFrom: manifestFile }
+    );
+
+    try { fs.unlinkSync(manifestFile); } catch (e) {}
+
+    const stillFailed = (res.failedFiles || []).map(f => f.filePath.toLowerCase().replace(/\\/g, '/'));
+    const succeeded = items.filter(it => !stillFailed.includes(it.file_path.toLowerCase().replace(/\\/g, '/')));
+
+    totalResolved.push(...succeeded);
+    if (stillFailed.length > 0) {
+      overallSuccess = false;
+    }
+  }
+
+  return {
+    success: overallSuccess,
+    resolvedFiles: totalResolved,
+    remainingFailedCount: failedFileItems.length - totalResolved.length
   };
 }
 
@@ -845,18 +1359,20 @@ function transferCloudToCloud(srcRemote, srcPaths, dstRemote, dstPath, mode = 'c
         mode, src, dst,
         '-v', '-P',
         '--stats', '1s',
-        '--transfers', '12',
-        '--checkers', '24',
-        '--buffer-size', '64M',
+        '--transfers', '4',
+        '--checkers', '8',
+        '--buffer-size', '16M',
         '--use-mmap',
         '--multi-thread-streams', '4',
+        '--multi-thread-cutoff', '64M',
         '--fast-list'
       ];
 
       const res = await new Promise((resChild) => {
         const rcloneBin = getRcloneBinaryPath();
         const child = spawn(rcloneBin, args, {
-          shell: true,
+          shell: false,
+          windowsHide: true,
           env: { ...process.env, RCLONE_CONFIG: RCLONE_CONFIG_PATH }
         });
 
@@ -876,26 +1392,25 @@ function transferCloudToCloud(srcRemote, srcPaths, dstRemote, dstPath, mode = 'c
 
         child.on('close', (code) => {
           if (taskId) activeTaskProcesses.delete(taskId);
-          resChild(code === 0);
+          resChild({ success: code === 0, code });
         });
 
         child.on('error', (err) => {
           if (taskId) activeTaskProcesses.delete(taskId);
-          const msg = `Error: ${err.message}\n`;
-          fullLog += msg;
-          onLog && onLog(msg);
-          resChild(false);
+          onLog && onLog(`\nTransfer error: ${err.message}\n`);
+          resChild({ success: false, code: -1 });
         });
       });
 
-      if (!res) overallSuccess = false;
+      if (!res.success) overallSuccess = false;
     }
 
+    const durationSec = Math.max(1, (Date.now() - startTime) / 1000);
     resolve({
       success: overallSuccess,
       output: fullLog,
       bytesTransferred: lastTransferred,
-      durationSec: (Date.now() - startTime) / 1000
+      durationSec
     });
   });
 }
@@ -929,11 +1444,15 @@ async function downloadRemoteFiles(remoteName, remotePaths, onLog, taskId = null
       const args = [
         '--config', RCLONE_CONFIG_PATH,
         'copy', src, destTarget,
-        '-v', '--transfers', '4'
+        '-v', '--transfers', '4',
+        '--checkers', '8',
+        '--buffer-size', '16M',
+        '--drive-chunk-size', '64M'
       ];
       const rcloneBin = getRcloneBinaryPath();
       const child = spawn(rcloneBin, args, {
-        shell: true,
+        shell: false,
+        windowsHide: true,
         env: { ...process.env, RCLONE_CONFIG: RCLONE_CONFIG_PATH }
       });
       if (taskId) activeTaskProcesses.set(taskId, child);
@@ -1060,12 +1579,23 @@ module.exports = {
   sanitizeAndWriteRcloneConfig,
   sanitizeRcloneConfigFile,
   runBackupTask,
+  pauseBackupTask,
+  unpauseTask,
+  isTaskPaused,
   cancelBackupTask,
+  isTaskCancelled,
+  clearTaskCancelled,
   parseSourcePaths,
+  resolveSourcePath,
+  refreshSourcesPathCache,
   listRemoteDir,
   transferCloudToCloud,
   downloadRemoteFiles,
   humanizeRcloneError,
+  ensureCryptRemote,
+  obscurePassword,
+  retryFailedFiles,
+  extractFailedFiles,
   RCLONE_CONFIG_PATH,
   CONFIG_DIR
 };
