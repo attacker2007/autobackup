@@ -76,6 +76,12 @@ db.serialize(() => {
   // Migration: ensure encrypt_backup column exists in tasks
   db.run("ALTER TABLE tasks ADD COLUMN encrypt_backup INTEGER DEFAULT 0", (err) => {});
 
+  // Migration: ensure bundle_archive column exists in tasks (automated local zip before upload)
+  db.run("ALTER TABLE tasks ADD COLUMN bundle_archive INTEGER DEFAULT 0", (err) => {});
+
+  // Migration: ensure smart_code_filter column exists in tasks (auto-exclude node_modules & build caches)
+  db.run("ALTER TABLE tasks ADD COLUMN smart_code_filter INTEGER DEFAULT 1", (err) => {});
+
   // Migration: ensure created_at exists in logs and tasks
   db.run("ALTER TABLE logs ADD COLUMN created_at DATETIME", (err) => {});
   db.run("ALTER TABLE tasks ADD COLUMN created_at DATETIME", (err) => {});

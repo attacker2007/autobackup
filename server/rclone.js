@@ -711,8 +711,13 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
       args.push(
         '--exclude', 'node_modules/**',
         '--exclude', '.next/**',
+        '--exclude', 'dist/**',
+        '--exclude', 'build/**',
         '--exclude', '.cache/**',
         '--exclude', '__pycache__/**',
+        '--exclude', '.venv/**',
+        '--exclude', 'venv/**',
+        '--exclude', '.turbo/**',
         '--exclude', 'Thumbs.db',
         '--exclude', '.DS_Store'
       );
@@ -1041,7 +1046,51 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
       onLog && onLog(`[Check Warning] Source path "${srcPath}" not directly found on local filesystem mount. Rclone will attempt remote sync...\n`);
     }
 
-    const res = await runSingleRcloneTransfer(mode, srcPath, destination, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun, options);
+    let res;
+    const isBundled = (task.bundle_archive === 1) || (options.bundleArchive === true);
+
+    if (isBundled) {
+      const bundler = require('./bundler');
+      onLog && onLog(`[Archive & Ship] 📦 Inspecting "${srcPath}" for local bundling...\n`);
+      const bundleRes = await bundler.createLocalBundle(task.id, task.name, srcPath, {
+        customExclusions: options.excludePatterns || [],
+        force: isDryRun
+      });
+
+      if (!bundleRes.changed && !isDryRun) {
+        onLog && onLog(`[Archive & Ship] ⏭️ No modified files in "${srcPath}" since last backup. Cloud archive is up to date, skipping redundant upload.\n`);
+        res = {
+          success: true,
+          exitCode: 0,
+          output: `[Archive & Ship] Skipped "${srcPath}" - 0 changes detected.\n`,
+          bytesTransferred: '0 B',
+          speed: '0 B/s',
+          durationSec: Math.max(1, Math.round((bundleRes.durationMs || 1000) / 1000)),
+          failedFiles: []
+        };
+      } else {
+        const mb = (bundleRes.bundleBytes / (1024 * 1024)).toFixed(2);
+        const origMb = (bundleRes.originalBytes / (1024 * 1024)).toFixed(2);
+        onLog && onLog(`[Archive & Ship] 📦 Bundle ready: ${bundleRes.zipFileName} (${mb} MB, compressed from ${origMb} MB across ${bundleRes.totalFiles} files in ${bundleRes.durationMs}ms).\n[Archive & Ship] Change Reason: ${bundleRes.changeReason}\n`);
+
+        let targetZipDir;
+        if (!isMultiFolderTask && sources.length === 1) {
+          targetZipDir = target_path ? `${effectiveRemote}:${target_path}` : `${effectiveRemote}:`;
+        } else {
+          targetZipDir = destination;
+        }
+
+        res = await runSingleRcloneTransfer('copy', bundleRes.zipPath, targetZipDir, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun, options);
+
+        await bundler.cleanupBundle(bundleRes.zipPath);
+      }
+    } else {
+      const directOptions = { ...options };
+      if (task.smart_code_filter === 0 || options.includeAllFiles === true) {
+        directOptions.includeAllFiles = true;
+      }
+      res = await runSingleRcloneTransfer(mode, srcPath, destination, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun, directOptions);
+    }
     accumulatedLog += res.output + '\n';
     totalDurationSec += res.durationSec;
 

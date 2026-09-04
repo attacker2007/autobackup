@@ -416,7 +416,7 @@
           <input type="text" id="task-cron" value="last_friday" placeholder="e.g. */30 * * * *">
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; margin-bottom: 1rem;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; margin-bottom: 0.65rem;">
           <div class="form-group" style="background: rgba(0, 242, 254, 0.05); border: 1px solid rgba(0, 242, 254, 0.2); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0;">
             <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 0.2rem;">
               <span style="font-weight: 700; color: var(--accent-cyan); font-size: 0.8rem;">⚡ Real-Time Sync</span>
@@ -431,6 +431,24 @@
               <input type="checkbox" id="task-encrypt-backup" style="width: 17px; height: 17px; cursor: pointer;">
             </label>
             <span class="form-help" style="margin: 0; font-size: 0.71rem;">Zero-knowledge AES-256 encryption via Settings encryption key.</span>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; margin-bottom: 1rem;">
+          <div class="form-group" style="background: rgba(234, 179, 8, 0.06); border: 1px solid rgba(234, 179, 8, 0.25); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0;">
+            <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 0.2rem;">
+              <span style="font-weight: 700; color: #fde047; font-size: 0.8rem;">📦 Archive &amp; Ship</span>
+              <input type="checkbox" id="task-bundle-archive" style="width: 17px; height: 17px; cursor: pointer;">
+            </label>
+            <span class="form-help" style="margin: 0; font-size: 0.71rem;">Compresses folder into local .zip before upload. Bypasses small-file latency (up to 100x faster).</span>
+          </div>
+
+          <div class="form-group" style="background: rgba(16, 185, 129, 0.06); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 0.6rem 0.75rem; margin: 0;">
+            <label style="display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 0.2rem;">
+              <span style="font-weight: 700; color: #34d399; font-size: 0.8rem;">🧠 Smart Code Filter</span>
+              <input type="checkbox" id="task-smart-filter" checked style="width: 17px; height: 17px; cursor: pointer;">
+            </label>
+            <span class="form-help" style="margin: 0; font-size: 0.71rem;">Auto-excludes node_modules, build caches, and venv (recommended).</span>
           </div>
         </div>
 

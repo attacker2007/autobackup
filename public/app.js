@@ -330,6 +330,12 @@ function renderTasks() {
     if (task.encrypt_backup) {
       priorityBadgeHtml += ` <span class="badge" style="background:rgba(139,92,246,0.15); color:#c4b5fd; border:1px solid rgba(139,92,246,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;" title="AES-256 Zero-knowledge client-side encrypted">🔒 ENCRYPTED</span>`;
     }
+    if (task.bundle_archive) {
+      priorityBadgeHtml += ` <span class="badge" style="background:rgba(234,179,8,0.15); color:#fde047; border:1px solid rgba(234,179,8,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;" title="Archive & Ship fast bundling enabled">📦 BUNDLED</span>`;
+    }
+    if (task.smart_code_filter !== 0) {
+      priorityBadgeHtml += ` <span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.35); font-size:0.68rem; font-weight:700; padding:0.1rem 0.45rem; border-radius:4px;" title="Smart dependency & build cache exclusions enabled">🧠 FILTERED</span>`;
+    }
 
     const conflictLabel = (task.conflict_mode || 'smart').toUpperCase();
     const sourcePaths = parseSourcePaths(task.source_path);
@@ -3360,6 +3366,10 @@ function openTaskModal(task = null) {
     if (rtCheck) rtCheck.checked = !!(task && (task.realtime_watch === 1 || task.realtime_watch === '1' || task.realtime_watch === true));
     const encCheck = document.getElementById('task-encrypt-backup');
     if (encCheck) encCheck.checked = !!(task && (task.encrypt_backup === 1 || task.encrypt_backup === '1' || task.encrypt_backup === true));
+    const bundleCheck = document.getElementById('task-bundle-archive');
+    if (bundleCheck) bundleCheck.checked = !!(task && (task.bundle_archive === 1 || task.bundle_archive === '1' || task.bundle_archive === true));
+    const smartCheck = document.getElementById('task-smart-filter');
+    if (smartCheck) smartCheck.checked = !(task && (task.smart_code_filter === 0 || task.smart_code_filter === '0' || task.smart_code_filter === false));
 
     if (task.cron_schedule === 'custom' || (!['last_friday', 'monthly', 'weekly', 'daily', '*/15 * * * *', '0 * * * *', '0 */6 * * *'].includes(task.cron_schedule))) {
       document.getElementById('task-schedule-preset').value = 'custom';
@@ -3379,6 +3389,10 @@ function openTaskModal(task = null) {
     if (rtCheck) rtCheck.checked = false;
     const encCheck = document.getElementById('task-encrypt-backup');
     if (encCheck) encCheck.checked = false;
+    const bundleCheck = document.getElementById('task-bundle-archive');
+    if (bundleCheck) bundleCheck.checked = false;
+    const smartCheck = document.getElementById('task-smart-filter');
+    if (smartCheck) smartCheck.checked = true;
   }
 
   renderTaskSelectedChips();
@@ -3431,6 +3445,8 @@ async function handleTaskFormSubmit(e) {
   const bw_limit = document.getElementById('task-bw-limit').value;
   const realtime_watch = document.getElementById('task-realtime-watch')?.checked ? 1 : 0;
   const encrypt_backup = document.getElementById('task-encrypt-backup')?.checked ? 1 : 0;
+  const bundle_archive = document.getElementById('task-bundle-archive')?.checked ? 1 : 0;
+  const smart_code_filter = document.getElementById('task-smart-filter')?.checked ? 1 : 0;
   let cron_schedule = document.getElementById('task-schedule-preset').value;
 
   if (cron_schedule === 'custom') {
@@ -3440,7 +3456,7 @@ async function handleTaskFormSubmit(e) {
   if (!name) { alert('Error: Please enter a Task Name.'); return; }
   if (!target_remote) { alert('Error: Please select a Destination Cloud Remote.'); return; }
 
-  const payload = { name, source_path, target_remote, target_path, mode, conflict_mode, cron_schedule, priority, bw_limit, realtime_watch, encrypt_backup, enabled: 1 };
+  const payload = { name, source_path, target_remote, target_path, mode, conflict_mode, cron_schedule, priority, bw_limit, realtime_watch, encrypt_backup, bundle_archive, smart_code_filter, enabled: 1 };
 
   try {
     let res;

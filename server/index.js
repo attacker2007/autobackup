@@ -160,8 +160,8 @@ async function restoreConfigBundle(bundle) {
     for (const t of bundle.tasks) {
       if (t.id && t.name && t.target_remote) {
         await db.run(
-          `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup, bundle_archive, smart_code_filter)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name=excluded.name,
              source_path=excluded.source_path,
@@ -174,12 +174,15 @@ async function restoreConfigBundle(bundle) {
              priority=excluded.priority,
              bw_limit=excluded.bw_limit,
              realtime_watch=excluded.realtime_watch,
-             encrypt_backup=excluded.encrypt_backup`,
+             encrypt_backup=excluded.encrypt_backup,
+             bundle_archive=excluded.bundle_archive,
+             smart_code_filter=excluded.smart_code_filter`,
           [
             t.id, t.name, t.source_path, t.target_remote, t.target_path || '',
             t.mode || 'copy', t.cron_schedule, t.enabled !== undefined ? t.enabled : 1,
             t.conflict_mode || 'smart', t.priority || 'normal', t.bw_limit || '',
-            t.realtime_watch ? 1 : 0, t.encrypt_backup ? 1 : 0
+            t.realtime_watch ? 1 : 0, t.encrypt_backup ? 1 : 0,
+            t.bundle_archive ? 1 : 0, t.smart_code_filter !== undefined ? (t.smart_code_filter ? 1 : 0) : 1
           ]
         );
         tasksImported++;
@@ -889,7 +892,7 @@ function inferPriority(cronSchedule, providedPriority) {
  */
 app.post('/api/tasks', async (req, res) => {
   try {
-    let { name, source_path, target_remote, target_path, mode = 'copy', cron_schedule, enabled = 1, conflict_mode = 'smart', priority, bw_limit = '', realtime_watch = 0, encrypt_backup = 0 } = req.body;
+    let { name, source_path, target_remote, target_path, mode = 'copy', cron_schedule, enabled = 1, conflict_mode = 'smart', priority, bw_limit = '', realtime_watch = 0, encrypt_backup = 0, bundle_archive = 0, smart_code_filter = 1 } = req.body;
 
     if (Array.isArray(source_path)) {
       source_path = JSON.stringify(source_path);
@@ -903,9 +906,9 @@ app.post('/api/tasks', async (req, res) => {
 
     const id = uuidv4();
     await db.run(
-      `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, name, source_path, target_remote, target_path || '', mode, cron_schedule, enabled ? 1 : 0, conflict_mode, taskPriority, bw_limit, realtime_watch ? 1 : 0, encrypt_backup ? 1 : 0]
+      `INSERT INTO tasks (id, name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup, bundle_archive, smart_code_filter)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, name, source_path, target_remote, target_path || '', mode, cron_schedule, enabled ? 1 : 0, conflict_mode, taskPriority, bw_limit, realtime_watch ? 1 : 0, encrypt_backup ? 1 : 0, bundle_archive ? 1 : 0, smart_code_filter !== undefined ? (smart_code_filter ? 1 : 0) : 1]
     );
 
     const newTask = await db.get('SELECT * FROM tasks WHERE id = ?', [id]);
@@ -927,7 +930,7 @@ app.post('/api/tasks', async (req, res) => {
 app.put('/api/tasks/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    let { name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup } = req.body;
+    let { name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, priority, bw_limit, realtime_watch, encrypt_backup, bundle_archive, smart_code_filter } = req.body;
 
     if (Array.isArray(source_path)) {
       source_path = JSON.stringify(source_path);
@@ -953,9 +956,18 @@ app.put('/api/tasks/:id', async (req, res) => {
         priority = COALESCE(?, priority),
         bw_limit = COALESCE(?, bw_limit),
         realtime_watch = COALESCE(?, realtime_watch),
-        encrypt_backup = COALESCE(?, encrypt_backup)
+        encrypt_backup = COALESCE(?, encrypt_backup),
+        bundle_archive = COALESCE(?, bundle_archive),
+        smart_code_filter = COALESCE(?, smart_code_filter)
        WHERE id = ?`,
-      [name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, taskPriority, bw_limit, realtime_watch !== undefined ? (realtime_watch ? 1 : 0) : existing.realtime_watch, encrypt_backup !== undefined ? (encrypt_backup ? 1 : 0) : existing.encrypt_backup, id]
+      [
+        name, source_path, target_remote, target_path, mode, cron_schedule, enabled, conflict_mode, taskPriority, bw_limit,
+        realtime_watch !== undefined ? (realtime_watch ? 1 : 0) : existing.realtime_watch,
+        encrypt_backup !== undefined ? (encrypt_backup ? 1 : 0) : existing.encrypt_backup,
+        bundle_archive !== undefined ? (bundle_archive ? 1 : 0) : existing.bundle_archive,
+        smart_code_filter !== undefined ? (smart_code_filter ? 1 : 0) : existing.smart_code_filter,
+        id
+      ]
     );
 
     const updatedTask = await db.get('SELECT * FROM tasks WHERE id = ?', [id]);
