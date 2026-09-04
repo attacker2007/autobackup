@@ -55,6 +55,7 @@ async function initApp() {
     fetchTasks(),
     fetchRemotes(),
     fetchSources(),
+    fetchLocalStorageStats(),
     fetchHistoryLogs(),
     fetchSettings(),
     fetchStorageAlerts(),
@@ -509,7 +510,10 @@ function buildContainerTree(sourcesList) {
           hostPath: isLeaf ? src.hostPath : null,
           sourceId: isLeaf ? src.id : null,
           sourceType: isLeaf ? src.source : null,
-          tags: isLeaf ? src.tags : null
+          tags: isLeaf ? src.tags : null,
+          totalBytes: isLeaf ? src.totalBytes : null,
+          formattedSize: isLeaf ? src.formattedSize : null,
+          fileCount: isLeaf ? src.fileCount : null
         };
       }
       curr = curr.children[part];
@@ -564,6 +568,15 @@ function renderTreeWidget(treeRoot, targetContainerEl, isSelectable = true, init
     if (checkboxEl) rowEl.appendChild(checkboxEl);
     rowEl.appendChild(iconEl);
     rowEl.appendChild(labelEl);
+
+    // Size badge
+    if (node.formattedSize && node.formattedSize !== '0 B' && node.formattedSize !== 'Path Missing') {
+      const sizeEl = document.createElement('span');
+      sizeEl.className = 'badge';
+      sizeEl.style.cssText = 'background: rgba(56,189,248,0.12); color: #38bdf8; font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.4rem; border-radius: 4px; border: 1px solid rgba(56,189,248,0.25); margin-left: 0.4rem;';
+      sizeEl.textContent = `💾 ${node.formattedSize}${node.fileCount ? ` (${node.fileCount} files)` : ''}`;
+      rowEl.appendChild(sizeEl);
+    }
 
     // Host path pill
     if (node.hostPath) {
@@ -2263,6 +2276,15 @@ async function loadFolderBrowserDir(dirPath = 'default') {
     if (pathEl) pathEl.textContent = data.path;
     if (upBtn) upBtn.disabled = !data.parentPath;
 
+    const driveCapEl = document.getElementById('folder-browser-drive-capacity');
+    if (driveCapEl) {
+      if (data.driveStats) {
+        driveCapEl.textContent = `💾 Drive ${data.driveStats.drive} Free: ${data.driveStats.formattedFree} of ${data.driveStats.formattedTotal} (${100 - data.driveStats.percentUsed}% available)`;
+      } else {
+        driveCapEl.textContent = '';
+      }
+    }
+
     renderFolderBreadcrumbs(data.breadcrumbs, data.path);
     renderFolderBrowserList(data.items);
   } catch (err) {
@@ -2306,7 +2328,7 @@ function renderFolderBrowserList(items) {
   if (!items || items.length === 0) {
     listEl.innerHTML = `
       <div class="cloud-browser-empty">
-        <div>📂 No subfolders found in this directory.</div>
+        <div>📂 No subfolders or files found in this directory.</div>
         <div style="font-size:0.74rem; color:var(--text-dim); margin-top:0.3rem;">You can select this folder using the path above or use the available roots bar.</div>
       </div>
     `;
@@ -2316,23 +2338,31 @@ function renderFolderBrowserList(items) {
   listEl.innerHTML = '';
   items.forEach(item => {
     const row = document.createElement('div');
-    row.className = 'cloud-browser-item is-dir';
+    row.className = `cloud-browser-item ${item.isDir ? 'is-dir' : 'is-file'}`;
     const isChecked = folderBrowserState.selectedPaths.has(item.path);
-    const countBadge = (item.childCount !== null && item.childCount !== undefined)
-      ? `<span style="font-size:0.7rem; color:var(--text-dim); margin-left:0.35rem;">(${item.childCount} ${item.childCount === 1 ? 'item' : 'items'})</span>`
-      : '';
+    const icon = item.isDir ? '📁' : '📄';
+
+    let sizeBadge = '';
+    if (item.isDir) {
+      if (item.childCount !== null && item.childCount !== undefined) {
+        sizeBadge = `<span style="font-size:0.7rem; color:var(--text-dim); margin-left:0.35rem;">(${item.childCount} ${item.childCount === 1 ? 'item' : 'items'})</span>`;
+      }
+    } else if (item.sizeStr) {
+      sizeBadge = `<span style="font-size:0.7rem; color:#38bdf8; margin-left:0.35rem; font-weight:600;">(${item.sizeStr})</span>`;
+    }
 
     row.innerHTML = `
       <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0;">
         <input type="checkbox" class="fb-item-checkbox" ${isChecked ? 'checked' : ''} style="cursor:pointer; transform: scale(1.15);">
-        <span class="cb-icon" style="cursor: pointer; font-size: 1.1rem;">📁</span>
+        <span class="cb-icon" style="cursor: pointer; font-size: 1.1rem;">${icon}</span>
         <span class="cb-name" style="cursor: pointer; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-          ${escapeHtml(item.name)}${countBadge}
+          ${escapeHtml(item.name)}${sizeBadge}
         </span>
       </div>
+      ${item.isDir ? `
       <button type="button" class="folder-nav-btn btn-open-subfolder" title="Navigate inside this folder">
         Open ➔
-      </button>
+      </button>` : `<span style="font-size:0.7rem; color:var(--text-dim); padding-right:0.6rem;">File</span>`}
     `;
 
     const checkbox = row.querySelector('.fb-item-checkbox');
@@ -4453,6 +4483,25 @@ async function fetchPairingCode(forceRefresh = false) {
       if (urlInput) urlInput.value = data.pairingUrl || window.location.origin;
       if (firewallInput && data.firewallCommand) firewallInput.value = data.firewallCommand;
 
+      const badge = document.getElementById('pairing-adapter-badge');
+      if (badge) {
+        badge.textContent = data.primaryType ? `📶 ${data.primaryType} Recommended` : '📶 Wi-Fi Recommended';
+      }
+
+      // Handle multiple network interfaces (allow choosing Wi-Fi vs other adapters)
+      const adaptersContainer = document.getElementById('pairing-adapters-container');
+      const adapterSelect = document.getElementById('pairing-adapter-select');
+      if (adaptersContainer && adapterSelect && Array.isArray(data.addresses) && data.addresses.length > 1) {
+        adaptersContainer.style.display = 'block';
+        adapterSelect.innerHTML = data.addresses.map(a => {
+          const isSelected = (a.address === data.primaryIp) ? 'selected' : '';
+          const recText = a.isRecommended ? ' ⭐ (Recommended for Phone/Tablet)' : (a.isVirtual ? ' ⚠️ (Virtual Adapter)' : '');
+          return `<option value="${escapeHtml(a.url)}" data-type="${escapeHtml(a.type)}" ${isSelected}>${escapeHtml(a.interface)}: ${escapeHtml(a.address)}${recText}</option>`;
+        }).join('');
+      } else if (adaptersContainer) {
+        adaptersContainer.style.display = 'none';
+      }
+
       if (qrImg) {
         const qrUrl = data.pairingUrl || window.location.origin;
         qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=${encodeURIComponent(qrUrl)}`;
@@ -4479,6 +4528,104 @@ async function fetchPairingCode(forceRefresh = false) {
   } catch (err) {
     console.warn('[Pairing] Error fetching pairing code:', err);
     if (codeDisplay) codeDisplay.textContent = 'OFFLINE';
+  }
+}
+
+function onSelectPairingAdapter(url) {
+  const urlInput = document.getElementById('pairing-url-input');
+  const qrImg = document.getElementById('pairing-qr-image');
+  const adapterSelect = document.getElementById('pairing-adapter-select');
+  const badge = document.getElementById('pairing-adapter-badge');
+
+  if (urlInput && url) {
+    urlInput.value = url;
+  }
+  if (qrImg && url) {
+    qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=${encodeURIComponent(url)}`;
+  }
+  if (badge && adapterSelect) {
+    const selectedOpt = adapterSelect.options[adapterSelect.selectedIndex];
+    const type = selectedOpt?.getAttribute('data-type') || 'LAN';
+    if (selectedOpt?.text.includes('Virtual')) {
+      badge.textContent = `💻 Virtual Adapter`;
+      badge.style.background = 'rgba(239, 68, 68, 0.15)';
+      badge.style.color = '#f87171';
+      badge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+    } else {
+      badge.textContent = `📶 ${type} (Selected)`;
+      badge.style.background = 'rgba(16, 185, 129, 0.15)';
+      badge.style.color = '#34d399';
+      badge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+    }
+  }
+}
+
+// ─── Local Drive Storage & Capacity ──────────────────────────────────────────
+
+async function fetchLocalStorageStats(showToast = false) {
+  const container = document.getElementById('local-drives-container');
+  if (!container) return;
+
+  try {
+    const res = await fetch('/api/system/storage');
+    const data = await res.json();
+
+    if (!data || !data.drives || data.drives.length === 0) {
+      container.innerHTML = '<div class="empty-state"><p>No local drives detected.</p></div>';
+      return;
+    }
+
+    container.innerHTML = data.drives.map(drive => {
+      let color = '#38bdf8';
+      let statusClass = 'status-success';
+      let statusText = 'HEALTHY';
+      if (drive.percentUsed >= 90) {
+        color = '#fb7185';
+        statusClass = 'status-failed';
+        statusText = 'CRITICAL LOW';
+      } else if (drive.percentUsed >= 75) {
+        color = '#fbbf24';
+        statusClass = 'status-warning';
+        statusText = 'HIGH USAGE';
+      }
+
+      return `
+        <div class="remote-card" style="border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); border-radius: 10px; padding: 0.85rem 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span style="font-size: 1.25rem;">💾</span>
+              <div>
+                <strong style="font-size: 0.92rem; color: var(--text-primary);">${escapeHtml(drive.name)}</strong>
+                <span style="display: block; font-size: 0.72rem; color: var(--text-dim); font-family: var(--font-mono);">${escapeHtml(drive.path)}</span>
+              </div>
+            </div>
+            <span class="status-pill ${statusClass}" style="font-size: 0.65rem; font-weight: 700;">${statusText}</span>
+          </div>
+
+          <!-- Storage Meter -->
+          <div style="margin-bottom: 0.4rem;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.74rem; margin-bottom: 0.25rem;">
+              <span style="color: var(--text-muted);">${drive.percentUsed}% Used</span>
+              <span style="color: ${color}; font-weight: 700;">${drive.formattedFree} Free</span>
+            </div>
+            <div style="height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden;">
+              <div style="height: 100%; width: ${drive.percentUsed}%; background: ${color}; border-radius: 3px; transition: width 0.4s ease;"></div>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; font-size: 0.71rem; color: var(--text-dim); margin-top: 0.35rem;">
+            <span>Used: ${drive.formattedUsed}</span>
+            <span>Total: ${drive.formattedTotal}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    if (showToast) {
+      appendConsoleLine('[Storage] ✅ Local drive storage metrics refreshed.', 'system');
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state" style="color:#fb7185;"><p>⚠️ Error scanning local drives: ${escapeHtml(err.message)}</p></div>`;
   }
 }
 

@@ -103,6 +103,126 @@ scheduler.setWebSocketBroadcast((messageStr) => {
   }
 });
 
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+}
+
+const folderStatsCache = new Map();
+
+/**
+ * Fast calculation of folder size and file count with in-memory TTL caching
+ */
+function getFolderQuickStats(folderPath) {
+  if (!folderPath) return { exists: false, totalBytes: 0, fileCount: 0, formattedSize: '0 B' };
+  const normalized = path.normalize(folderPath);
+  const now = Date.now();
+  if (folderStatsCache.has(normalized)) {
+    const cached = folderStatsCache.get(normalized);
+    if (now < cached.expiresAt) return cached;
+  }
+
+  if (!fs.existsSync(normalized)) {
+    return { exists: false, totalBytes: 0, fileCount: 0, formattedSize: 'Path Missing' };
+  }
+
+  try {
+    const bundler = require('./bundler');
+    const files = bundler.scanDirectory(normalized, normalized);
+    const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    const res = {
+      exists: true,
+      totalBytes,
+      fileCount: files.length,
+      formattedSize: formatBytes(totalBytes),
+      expiresAt: now + 45000 // 45s cache
+    };
+    folderStatsCache.set(normalized, res);
+    return res;
+  } catch (e) {
+    return { exists: true, totalBytes: 0, fileCount: 0, formattedSize: '0 B' };
+  }
+}
+
+/**
+ * Intelligently detect and rank all network interfaces.
+ * Prioritizes physical Wi-Fi and Ethernet over virtual adapters (VMware, WSL, VirtualBox, Hyper-V).
+ */
+function getNetworkInterfacesInfo(preferredPort = 3000) {
+  const interfaces = os.networkInterfaces();
+  const allAddresses = [];
+
+  for (const [name, nets] of Object.entries(interfaces)) {
+    for (const net of nets) {
+      if (net.family === 'IPv4' && !net.internal) {
+        const lowerName = name.toLowerCase();
+        const ip = net.address;
+
+        const isVirtual = lowerName.includes('vmware') ||
+                          lowerName.includes('virtual') ||
+                          lowerName.includes('veth') ||
+                          lowerName.includes('vethernet') ||
+                          lowerName.includes('wsl') ||
+                          lowerName.includes('hyper-v') ||
+                          lowerName.includes('loopback') ||
+                          lowerName.includes('docker') ||
+                          lowerName.includes('tap') ||
+                          lowerName.includes('tun') ||
+                          ip.startsWith('169.254.') ||
+                          ip.startsWith('192.168.239.') ||
+                          ip.startsWith('192.168.195.');
+
+        const isWifi = lowerName.includes('wi-fi') || lowerName.includes('wifi') || lowerName.includes('wireless') || lowerName.includes('wlan');
+        const isEthernet = lowerName.includes('ethernet') || lowerName.includes('eth') || lowerName.includes('lan');
+
+        let score = 50;
+        if (isVirtual) {
+          score = 10;
+        } else if (isWifi) {
+          score = 100;
+        } else if (isEthernet) {
+          score = 90;
+        } else {
+          score = 70;
+        }
+
+        if (!isVirtual && (ip.startsWith('192.168.1.') || ip.startsWith('192.168.0.') || ip.startsWith('10.0.'))) {
+          score += 15;
+        }
+
+        let typeLabel = 'LAN';
+        if (isWifi) typeLabel = 'Wi-Fi (Wireless)';
+        else if (isEthernet) typeLabel = 'Ethernet (Wired)';
+        else if (isVirtual) typeLabel = 'Virtual Adapter';
+
+        allAddresses.push({
+          interface: name,
+          address: ip,
+          type: typeLabel,
+          isVirtual,
+          isWifi,
+          isRecommended: (score >= 90 && !isVirtual),
+          score,
+          url: `http://${ip}:${preferredPort}`
+        });
+      }
+    }
+  }
+
+  allAddresses.sort((a, b) => b.score - a.score);
+
+  const primary = allAddresses.length > 0 ? allAddresses[0] : { address: 'localhost', url: `http://localhost:${preferredPort}`, type: 'Local', isRecommended: true };
+
+  return {
+    primaryIp: primary.address,
+    primaryUrl: primary.url,
+    primaryType: primary.type,
+    addresses: allAddresses
+  };
+}
+
 /**
  * Configuration Persistence Engine:
  * Restores a full bundle (tasks, sources, settings, rcloneConfig) into SQLite & rclone.conf
@@ -580,7 +700,28 @@ app.get('/api/sources', async (req, res) => {
     }
 
     const sourcesList = Array.from(sourcesMap.values());
+    for (const item of sourcesList) {
+      const p = item.hostPath || item.containerPath;
+      const stats = getFolderQuickStats(p);
+      item.totalBytes = stats.totalBytes;
+      item.fileCount = stats.fileCount;
+      item.formattedSize = stats.formattedSize;
+    }
     res.json(sourcesList);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Calculate size breakdown for any specific path on demand
+ */
+app.get('/api/sources/size', (req, res) => {
+  try {
+    const targetPath = req.query.path;
+    if (!targetPath) return res.status(400).json({ error: 'path query parameter is required' });
+    const stats = getFolderQuickStats(targetPath);
+    res.json({ success: true, path: targetPath, ...stats });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -817,21 +958,34 @@ app.get('/api/sources/browse', (req, res) => {
           const itemPath = (normalized === '/' ? `/${item.name}` : `${normalized}/${item.name}`).replace(/\/+/g, '/');
           const isDir = item.isDirectory();
           let count = null;
+          let size = 0;
+          let sizeStr = '';
           if (isDir) {
             try {
               const children = fs.readdirSync(itemPath);
               count = children.length;
+            } catch (e) {}
+          } else {
+            try {
+              const stat = fs.statSync(itemPath);
+              size = stat.size;
+              sizeStr = formatBytes(stat.size);
             } catch (e) {}
           }
           return {
             name: item.name,
             path: itemPath,
             isDir,
-            childCount: count
+            childCount: count,
+            size,
+            sizeStr
           };
         })
-        .filter(item => item.isDir) // Folder picker focuses on folders
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        .sort((a, b) => {
+          if (a.isDir && !b.isDir) return -1;
+          if (!a.isDir && b.isDir) return 1;
+          return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        });
     } catch (readErr) {
       return res.json({
         path: normalized,
@@ -843,14 +997,108 @@ app.get('/api/sources/browse', (req, res) => {
       });
     }
 
+    let driveStats = null;
+    try {
+      const dm = normalized.match(/^[A-Za-z]:/);
+      const rootP = dm ? `${dm[0]}/` : (normalized.startsWith('/') ? '/' : normalized);
+      const fsStats = fs.statfsSync(rootP);
+      const totalBytes = fsStats.blocks * fsStats.bsize;
+      const freeBytes = fsStats.bavail * fsStats.bsize;
+      const usedBytes = Math.max(0, totalBytes - freeBytes);
+      driveStats = {
+        drive: dm ? dm[0] : rootP,
+        totalBytes,
+        freeBytes,
+        usedBytes,
+        percentUsed: totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0,
+        formattedTotal: formatBytes(totalBytes),
+        formattedFree: formatBytes(freeBytes),
+        formattedUsed: formatBytes(usedBytes)
+      };
+    } catch (e) {}
+
     res.json({
       path: normalized,
       items,
       exists: true,
       itemCount: items.length,
       breadcrumbs,
-      parentPath
+      parentPath,
+      driveStats
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * System Storage Health & Drive Capacity Inspection
+ * Uses native fs.statfsSync to retrieve total, used, and free space across local storage drives.
+ */
+app.get('/api/system/storage', (req, res) => {
+  try {
+    const drives = [];
+    if (process.platform === 'win32') {
+      const letters = ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'Z'];
+      for (const letter of letters) {
+        const drivePath = `${letter}:/`;
+        try {
+          if (fs.existsSync(drivePath)) {
+            const stats = fs.statfsSync(drivePath);
+            const totalBytes = stats.blocks * stats.bsize;
+            const freeBytes = stats.bavail * stats.bsize;
+            const usedBytes = Math.max(0, totalBytes - freeBytes);
+            const percentUsed = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
+            drives.push({
+              drive: `${letter}:`,
+              path: drivePath,
+              name: letter === 'C' ? 'System Drive (C:)' : `Local Drive (${letter}:)`,
+              totalBytes,
+              freeBytes,
+              usedBytes,
+              percentUsed,
+              formattedTotal: formatBytes(totalBytes),
+              formattedFree: formatBytes(freeBytes),
+              formattedUsed: formatBytes(usedBytes),
+              isLowSpace: percentUsed >= 90
+            });
+          }
+        } catch (e) {}
+      }
+    } else {
+      const mountPaths = ['/', '/backup_sources', '/hostfs', '/config', '/app'];
+      const seenDev = new Set();
+      for (const m of mountPaths) {
+        try {
+          if (fs.existsSync(m)) {
+            const stats = fs.statfsSync(m);
+            const totalBytes = stats.blocks * stats.bsize;
+            const freeBytes = stats.bavail * stats.bsize;
+            const usedBytes = Math.max(0, totalBytes - freeBytes);
+            const key = `${stats.blocks}_${stats.bavail}`;
+            if (!seenDev.has(key)) {
+              seenDev.add(key);
+              const percentUsed = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
+              drives.push({
+                drive: m,
+                path: m,
+                name: m === '/' ? 'Root Storage (/)' : `Mount (${m})`,
+                totalBytes,
+                freeBytes,
+                usedBytes,
+                percentUsed,
+                formattedTotal: formatBytes(totalBytes),
+                formattedFree: formatBytes(freeBytes),
+                formattedUsed: formatBytes(usedBytes),
+                isLowSpace: percentUsed >= 90
+              });
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    res.json({ success: true, drives, timestamp: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1414,29 +1662,20 @@ app.post('/api/settings/publish-discord-release', async (req, res) => {
  */
 app.get('/api/network/pairing-info', async (req, res) => {
   try {
-    const interfaces = os.networkInterfaces();
-    const addresses = [];
-    for (const name of Object.keys(interfaces)) {
-      for (const net of interfaces[name]) {
-        // Skip internal (127.0.0.1) and non-IPv4 addresses
-        if (net.family === 'IPv4' && !net.internal) {
-          addresses.push({ interface: name, address: net.address });
-        }
-      }
-    }
+    const port = process.env.PORT || 3000;
+    const netInfo = getNetworkInterfacesInfo(port);
 
     const deviceRow = await db.get('SELECT value FROM settings WHERE key = ?', ['device_name']);
     const deviceName = deviceRow ? deviceRow.value : (os.hostname() || 'AutoBackup-Hub');
-    const port = process.env.PORT || 3000;
-    const primaryIp = addresses.length > 0 ? addresses[0].address : 'localhost';
-    const pairingUrl = `http://${primaryIp}:${port}`;
 
     res.json({
       deviceName,
       port,
-      primaryIp,
-      pairingUrl,
-      addresses,
+      primaryIp: netInfo.primaryIp,
+      primaryUrl: netInfo.primaryUrl,
+      primaryType: netInfo.primaryType,
+      pairingUrl: netInfo.primaryUrl,
+      addresses: netInfo.addresses,
       platform: process.platform
     });
   } catch (err) {
@@ -1476,18 +1715,8 @@ app.get('/api/network/pairing-code', async (req, res) => {
       }
     }
 
-    const interfaces = os.networkInterfaces();
-    const addresses = [];
-    for (const name of Object.keys(interfaces)) {
-      for (const net of interfaces[name]) {
-        if (net.family === 'IPv4' && !net.internal) {
-          addresses.push({ interface: name, address: net.address });
-        }
-      }
-    }
     const port = process.env.PORT || 3000;
-    const primaryIp = addresses.length > 0 ? addresses[0].address : 'localhost';
-    const pairingUrl = `http://${primaryIp}:${port}`;
+    const netInfo = getNetworkInterfacesInfo(port);
 
     const deviceRow = await db.get('SELECT value FROM settings WHERE key = ?', ['device_name']);
     const deviceName = deviceRow ? deviceRow.value : (os.hostname() || 'AutoBackup-Host');
@@ -1501,10 +1730,11 @@ app.get('/api/network/pairing-code', async (req, res) => {
         createdAt: Date.now(),
         expiresAt,
         deviceName,
-        addresses,
-        primaryIp,
+        addresses: netInfo.addresses,
+        primaryIp: netInfo.primaryIp,
+        primaryType: netInfo.primaryType,
         port,
-        pairingUrl
+        pairingUrl: netInfo.primaryUrl
       };
       activePairingCodes.set(rawCode, codeObj);
     }
@@ -1518,10 +1748,11 @@ app.get('/api/network/pairing-code', async (req, res) => {
       expiresAt: codeObj.expiresAt,
       remainingSeconds,
       deviceName,
-      addresses,
-      primaryIp,
+      addresses: netInfo.addresses,
+      primaryIp: netInfo.primaryIp,
+      primaryType: netInfo.primaryType,
       port,
-      pairingUrl,
+      pairingUrl: netInfo.primaryUrl,
       firewallCommand: `powershell -Command "New-NetFirewallRule -DisplayName 'AutoBackup' -Direction Inbound -LocalPort ${port} -Protocol TCP -Action Allow"`
     });
   } catch (err) {

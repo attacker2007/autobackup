@@ -44,3 +44,5 @@ dist/
 bin/*.exe
 bin/*.zip
 
+# Temp & Scratch
+scratch/

@@ -151,6 +151,26 @@
       </div>
     </section>
 
+    <!-- Local Drives & Host Storage Capacity Health -->
+    <section class="section-panel" style="margin-bottom: 1.25rem;">
+      <div class="section-header-row">
+        <div class="section-title-wrap">
+          <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" style="color: #38bdf8;"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+          <h2 class="section-title">Local Drives &amp; Storage Capacity</h2>
+        </div>
+        <button class="btn btn-sm btn-outline" id="btn-refresh-storage" onclick="fetchLocalStorageStats(true)">
+          <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+          Refresh Drives
+        </button>
+      </div>
+
+      <div class="remotes-status-grid" id="local-drives-container">
+        <div class="empty-state">
+          <p>Scanning local drive storage...</p>
+        </div>
+      </div>
+    </section>
+
     <!-- Mounted Container Volumes Explorer (root/) -->
     <section class="section-panel">
       <div class="section-header-row">
@@ -1132,12 +1152,13 @@
             </div>
           </div>
 
-          <!-- Breadcrumbs Bar -->
+          <!-- Breadcrumbs Bar & Drive Capacity -->
           <div class="tree-header">
             <div id="folder-breadcrumbs-container" style="display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; flex: 1;">
               <span id="folder-browser-path" style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--accent-cyan);">/</span>
             </div>
-            <div style="display: flex; gap: 0.3rem;">
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              <span id="folder-browser-drive-capacity" style="font-size: 0.72rem; color: #34d399; font-weight: 600;"></span>
               <button type="button" class="btn btn-sm btn-secondary" id="btn-folder-select-all" onclick="toggleSelectAllFolderBrowser()">Select All</button>
               <button type="button" class="btn btn-sm btn-secondary" id="btn-folder-up" onclick="folderBrowserGoUp()" disabled>↑ Up</button>
             </div>
@@ -1349,19 +1370,32 @@
           </div>
 
           <div style="width: 100%; margin-bottom: 0.85rem; text-align: left;">
-            <label style="font-size: 0.74rem; color: var(--text-dim); display: block; margin-bottom: 0.3rem;">1. Address to open on your tablet/phone:</label>
-            <div style="display: flex; gap: 0.4rem;">
-              <input type="text" id="pairing-url-input" readonly style="flex: 1; text-align: center; font-family: var(--font-mono); font-size: 0.82rem; background: rgba(0,0,0,0.4); border-color: rgba(0,242,254,0.3); color: var(--accent-cyan);" value="http://localhost:3000">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+              <label style="font-size: 0.74rem; color: var(--text-dim);">1. Address to open on your phone/tablet:</label>
+              <span id="pairing-adapter-badge" class="badge" style="background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 0.68rem; border: 1px solid rgba(16, 185, 129, 0.3);">📶 Wi-Fi Recommended</span>
+            </div>
+            <div style="display: flex; gap: 0.4rem; margin-bottom: 0.4rem;">
+              <input type="text" id="pairing-url-input" readonly style="flex: 1; text-align: center; font-family: var(--font-mono); font-size: 0.85rem; background: rgba(0,0,0,0.4); border-color: rgba(0,242,254,0.3); color: var(--accent-cyan);" value="http://localhost:3000">
               <button type="button" class="btn btn-sm btn-primary" id="btn-copy-pairing-url" onclick="copyPairingUrl()">📋 Copy</button>
+            </div>
+            <!-- Multiple Network Adapters Dropdown -->
+            <div id="pairing-adapters-container" style="display: none; margin-bottom: 0.5rem;">
+              <label style="font-size: 0.7rem; color: var(--text-dim); display: block; margin-bottom: 0.2rem;">Choose your network connection:</label>
+              <select id="pairing-adapter-select" style="width: 100%; font-size: 0.75rem; padding: 0.35rem 0.5rem; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); color: var(--text-primary); border-radius: 6px;" onchange="onSelectPairingAdapter(this.value)"></select>
             </div>
           </div>
 
-          <div id="pairing-firewall-note" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 0.65rem; text-align: left; font-size: 0.74rem; color: var(--text-muted); margin-bottom: 0.5rem;">
-            <strong style="color: #f59e0b; display: block; margin-bottom: 0.2rem;">💡 Can't open the page on your tablet?</strong>
-            <span>Windows Defender Firewall may be blocking port 3000 on your LAN. Run this quick PowerShell rule on your PC:</span>
+          <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px; padding: 0.65rem; text-align: left; font-size: 0.74rem; color: var(--text-muted); margin-bottom: 0.65rem;">
+            <strong style="color: #38bdf8; display: block; margin-bottom: 0.2rem;">🔒 Why HTTP &amp; not HTTPS on local Wi-Fi?</strong>
+            <span>Local home networks use HTTP because SSL/HTTPS certificates require a public domain name. Your communication is already secured by your private Wi-Fi network's WPA2/WPA3 password. If your mobile browser displays a "Not Secure" tag, that is normal for private LAN IPs—you can safely proceed.</span>
+          </div>
+
+          <div id="pairing-firewall-note" style="background: rgba(245, 158, 11, 0.05); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 8px; padding: 0.65rem; text-align: left; font-size: 0.74rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+            <strong style="color: #f59e0b; display: block; margin-bottom: 0.2rem;">💡 Did your phone say "Took too long to respond"?</strong>
+            <span>Windows Defender Firewall blocks incoming connections from other devices on your Wi-Fi by default. Open PowerShell on this PC and run this one-time command to allow access:</span>
             <div style="display: flex; gap: 0.4rem; margin-top: 0.4rem;">
               <input type="text" id="firewall-cmd-input" readonly style="flex: 1; font-size: 0.7rem; font-family: var(--font-mono); background: rgba(0,0,0,0.4); color: var(--text-dim);" value="New-NetFirewallRule -DisplayName 'AutoBackup' -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow">
-              <button type="button" class="btn btn-sm btn-secondary" onclick="copyFirewallCommand()">📋 Copy</button>
+              <button type="button" class="btn btn-sm btn-secondary" onclick="copyFirewallCommand()">📋 Copy Command</button>
             </div>
           </div>
         </div>
