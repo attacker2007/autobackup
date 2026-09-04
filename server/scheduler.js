@@ -402,6 +402,19 @@ class TaskScheduler {
   }
 
   /**
+   * Stop an actively running backup task
+   */
+  async stopTask(taskId) {
+    const { cancelBackupTask } = require('./rclone');
+    cancelBackupTask(taskId);
+    this.runningTasks.delete(taskId);
+    await db.run('UPDATE tasks SET last_status = ? WHERE id = ?', ['stopped', taskId]);
+    this.broadcast('task_stopped', { taskId });
+    console.log(`[Scheduler] Task ${taskId} stopped by user.`);
+    return { success: true, status: 'stopped', taskId };
+  }
+
+  /**
    * Execute a task immediately (manual trigger, cron trigger, dry-run, or partial sources)
    */
   async executeTask(taskId, isDryRun = false, options = {}) {

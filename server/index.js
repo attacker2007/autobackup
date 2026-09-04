@@ -1112,9 +1112,11 @@ app.post('/api/tasks/:id/dry-run', (req, res) => {
 app.post('/api/tasks/:id/stop', async (req, res) => {
   try {
     const { id } = req.params;
+    rclone.cancelBackupTask(id);
     const result = await scheduler.stopTask(id);
     res.json(result);
   } catch (err) {
+    rclone.cancelBackupTask(req.params.id);
     res.status(500).json({ error: err.message });
   }
 });

@@ -992,7 +992,6 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
 
   for (let i = 0; i < sources.length; i++) {
     if (cancelledTasks.has(task.id)) {
-      cancelledTasks.delete(task.id);
       if (tempFilterFile && fs.existsSync(tempFilterFile)) { try { fs.unlinkSync(tempFilterFile); } catch (e) {} }
       onLog && onLog(`\n🛑 [Task Stopped] Backup task "${task.name}" execution was stopped by user.\n`);
       return {
@@ -1047,7 +1046,6 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
     totalDurationSec += res.durationSec;
 
     if (res.isStopped || cancelledTasks.has(task.id)) {
-      cancelledTasks.delete(task.id);
       if (tempFilterFile && fs.existsSync(tempFilterFile)) { try { fs.unlinkSync(tempFilterFile); } catch (e) {} }
       onLog && onLog(`\n🛑 [Task Stopped] Backup task "${task.name}" execution was stopped by user.\n`);
       return {
