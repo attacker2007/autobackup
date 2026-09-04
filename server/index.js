@@ -2558,19 +2558,28 @@ app.post('/api/transfer/cloud-to-local', async (req, res) => {
  */
 app.post('/api/transfer/upload-files', async (req, res) => {
   try {
-    const { remote, targetPath = '', files = [] } = req.body;
+    const { remote, targetPath = '', files = [], deviceName = 'Device' } = req.body;
     if (!remote || !Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: 'remote and files array are required' });
     }
 
+    let cleanTargetPath = targetPath ? targetPath.trim() : '';
+    if (!cleanTargetPath) {
+      const now = new Date();
+      const dateFolder = now.toISOString().slice(0, 10);
+      const safeDev = deviceName.replace(/[^a-zA-Z0-9_\-]/g, '_');
+      cleanTargetPath = `${safeDev}_Backups/${dateFolder}`;
+    }
+
     const logId = uuidv4();
-    const taskName = `Upload (${files.length} file${files.length > 1 ? 's' : ''}): Local → ${remote}`;
+    const taskName = `📱 [${deviceName}] Upload (${files.length} file${files.length > 1 ? 's' : ''}) → ${remote}:${cleanTargetPath}`;
+    const startTime = new Date().toISOString();
 
     broadcastWS('task_started', {
       taskId: logId,
       taskName,
       logId,
-      startTime: new Date().toISOString()
+      startTime
     });
 
     // Create temp staging directory for uploaded files
@@ -2590,8 +2599,8 @@ app.post('/api/transfer/upload-files', async (req, res) => {
     }
 
     // Use rclone to copy staging folder to remote:targetPath
-    const destSpec = targetPath ? `${remote}:${targetPath}` : `${remote}:`;
-    broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] Staged ${files.length} file(s) (${(totalBytes / 1024 / 1024).toFixed(2)} MB). Transferring to ${destSpec}...\n` });
+    const destSpec = cleanTargetPath ? `${remote}:${cleanTargetPath}` : `${remote}:`;
+    broadcastWS('task_log', { taskId: logId, logId, logLine: `[Device Upload] Staged ${files.length} file(s) from "${deviceName}" (${(totalBytes / 1024 / 1024).toFixed(2)} MB). Transferring to ${destSpec}...\n` });
 
     const rcloneRes = await rclone.execRclone([
       'copy', uploadsTempDir, destSpec,
@@ -2610,27 +2619,52 @@ app.post('/api/transfer/upload-files', async (req, res) => {
       fs.rmSync(uploadsTempDir, { recursive: true, force: true });
     } catch (e) {}
 
-    if (rcloneRes.success) {
-      broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] ✅ Upload completed successfully to ${destSpec}!\n` });
+    const endTime = new Date().toISOString();
+    const isSuccess = rcloneRes.success;
+    const formattedBytes = `${(totalBytes / 1024 / 1024).toFixed(2)} MB`;
+
+    // Persist to logs history table
+    try {
+      await db.run(
+        `INSERT INTO logs (id, task_id, task_name, start_time, end_time, status, bytes_transferred, files_transferred, output)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          logId,
+          logId,
+          taskName,
+          startTime,
+          endTime,
+          isSuccess ? 'success' : 'failed',
+          formattedBytes,
+          files.length,
+          rcloneRes.output || (isSuccess ? `Device upload completed successfully to ${destSpec}.` : 'Upload failed.')
+        ]
+      );
+    } catch (dbErr) {
+      console.warn('[Upload] Failed inserting log history:', dbErr.message);
+    }
+
+    if (isSuccess) {
+      broadcastWS('task_log', { taskId: logId, logId, logLine: `[Device Upload] ✅ Upload from "${deviceName}" completed successfully to ${destSpec}!\n` });
       broadcastWS('task_finished', {
         taskId: logId,
         taskName,
         logId,
         status: 'success',
-        bytesTransferred: `${(totalBytes / 1024 / 1024).toFixed(2)} MB`,
+        bytesTransferred: formattedBytes,
         filesTransferred: files.length,
-        endTime: new Date().toISOString()
+        endTime
       });
-      return res.json({ success: true, filesUploaded: files.length, totalBytes });
+      return res.json({ success: true, filesUploaded: files.length, totalBytes, targetPath: cleanTargetPath, destSpec });
     } else {
-      broadcastWS('task_log', { taskId: logId, logId, logLine: `[Upload] ❌ Upload failed: ${rcloneRes.output}\n` });
+      broadcastWS('task_log', { taskId: logId, logId, logLine: `[Device Upload] ❌ Upload failed: ${rcloneRes.output}\n` });
       broadcastWS('task_finished', {
         taskId: logId,
         taskName,
         logId,
         status: 'failed',
         bytesTransferred: '0 B',
-        endTime: new Date().toISOString()
+        endTime
       });
       return res.status(500).json({ error: rcloneRes.output || 'Upload failed' });
     }

@@ -456,44 +456,59 @@ class TaskScheduler {
     let logBuffer = '';
     let logThrottleTimer = null;
 
-    const result = await runBackupTask(
-      task,
-      (progressText) => {
-        this.broadcast('task_progress', {
-          taskId,
-          logId,
-          progressText
-        });
-      },
-      (logLine) => {
-        logBuffer += logLine;
-        if (!logThrottleTimer) {
-          logThrottleTimer = setTimeout(() => {
-            if (logBuffer) {
-              this.broadcast('task_log', {
-                taskId,
-                logId,
-                logLine: logBuffer
-              });
-              logBuffer = '';
-            }
-            logThrottleTimer = null;
-          }, 250);
-        }
-      },
-      {
-        isDryRun,
-        selectedSources: options.selectedSources,
-        subPaths: options.subPaths,
-        onSlowdown: (slowInfo) => {
-          this.broadcast('task_slowdown', {
+    const taskTickInterval = setInterval(() => {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
+      this.broadcast('task_tick', {
+        taskId,
+        logId,
+        totalElapsedSec: elapsedSec
+      });
+    }, 1000);
+
+    let result;
+    try {
+      result = await runBackupTask(
+        task,
+        (progressText, timingMeta = {}) => {
+          this.broadcast('task_progress', {
             taskId,
-            speed: slowInfo.speed,
-            message: 'Adaptive speed throttle engaged due to network slowdown.'
+            logId,
+            progressText,
+            ...timingMeta
           });
+        },
+        (logLine) => {
+          logBuffer += logLine;
+          if (!logThrottleTimer) {
+            logThrottleTimer = setTimeout(() => {
+              if (logBuffer) {
+                this.broadcast('task_log', {
+                  taskId,
+                  logId,
+                  logLine: logBuffer
+                });
+                logBuffer = '';
+              }
+              logThrottleTimer = null;
+            }, 250);
+          }
+        },
+        {
+          isDryRun,
+          selectedSources: options.selectedSources,
+          subPaths: options.subPaths,
+          onSlowdown: (slowInfo) => {
+            this.broadcast('task_slowdown', {
+              taskId,
+              speed: slowInfo.speed,
+              message: 'Adaptive speed throttle engaged due to network slowdown.'
+            });
+          }
         }
-      }
-    );
+      );
+    } finally {
+      clearInterval(taskTickInterval);
+    }
 
     if (logThrottleTimer) {
       clearTimeout(logThrottleTimer);

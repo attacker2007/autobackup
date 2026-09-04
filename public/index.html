@@ -53,6 +53,12 @@
       <div class="status-beacon" id="system-status-badge">
         <span class="pulse-dot"></span> System Online
       </div>
+      <button class="btn btn-secondary" id="btn-toggle-device-mode" title="Toggle between Companion Mode and Host Admin Mode">
+        <span id="device-mode-icon">📱</span> <span id="device-mode-label">Companion Mode</span>
+      </button>
+      <button class="btn btn-secondary" id="btn-toggle-wake-lock" title="Keep tablet screen awake while viewing live backup">
+        <span id="wake-lock-icon">👁️</span> <span id="wake-lock-label">Keep Awake</span>
+      </button>
       <button class="btn btn-secondary" id="btn-open-link-device" title="Link Tablet or Phone via 6-Digit Code or QR">
         <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
         <span>Link Device</span>
@@ -78,6 +84,70 @@
 
   <!-- Main Container -->
   <main>
+
+    <!-- Direct Backup from Tablet/Phone to Cloud Services -->
+    <section id="device-backup-section" class="device-backup-card">
+      <div class="device-backup-header">
+        <div style="display:flex; align-items:center; gap:0.6rem;">
+          <span style="font-size:1.4rem;">📤</span>
+          <div>
+            <h2 style="font-size:1.05rem; font-weight:700; color:var(--text-main); margin:0;">Backup This Device to Cloud</h2>
+            <span style="font-size:0.75rem; color:var(--text-muted);">Send photos, documents, and folders from this device straight to your cloud storage</span>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+          <span class="companion-mode-badge" id="host-engine-status-badge" title="Backups run continuously on host PC even if this tablet screen sleeps">
+            🟢 Host PC Engine Active
+          </span>
+        </div>
+      </div>
+
+      <div class="device-backup-grid">
+        <div>
+          <label style="display:block; font-size:0.75rem; color:var(--text-muted); margin-bottom:0.35rem; font-weight:600;">☁️ Select Target Cloud Remote</label>
+          <select id="device-backup-remote-select" class="form-select" style="width:100%; height:40px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-card); border-radius:var(--radius-xs); padding:0 0.6rem;">
+            <option value="">Loading connected remotes...</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block; font-size:0.75rem; color:var(--text-muted); margin-bottom:0.35rem; font-weight:600;">📁 Target Cloud Folder (Optional)</label>
+          <input type="text" id="device-backup-folder-input" class="form-input" placeholder="Auto: Tablet_Backups/YYYY-MM-DD" style="width:100%; height:40px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-card); border-radius:var(--radius-xs); padding:0 0.6rem;">
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+          <input type="file" id="device-backup-file-input" multiple style="display:none;">
+          <button type="button" class="btn btn-secondary" id="btn-select-device-files" style="height:40px; padding:0 1rem;">
+            📁 Select Files...
+          </button>
+          <button type="button" class="btn btn-primary" id="btn-upload-device-files" style="height:40px; padding:0 1.25rem;" disabled>
+            ☁️ Backup Now
+          </button>
+        </div>
+      </div>
+
+      <div id="device-backup-dropzone" class="device-backup-dropzone">
+        <span style="font-size:1.1rem;">📥</span>
+        <div style="font-size:0.82rem; font-weight:600; color:var(--text-cyan); margin-top:0.25rem;">Drag &amp; Drop files or photos here, or tap "Select Files" above</div>
+        <div style="font-size:0.72rem; color:var(--text-dim); margin-top:0.15rem;">Supports photos, videos, documents, and folders from your tablet or phone</div>
+      </div>
+
+      <div id="device-backup-file-summary" class="hidden" style="margin-top:0.75rem; padding:0.6rem 0.85rem; background:rgba(0,0,0,0.3); border-radius:6px; font-size:0.8rem; border:1px solid rgba(255,255,255,0.08);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+          <strong id="device-backup-count-text" style="color:var(--text-pure);">0 files selected</strong>
+          <button type="button" id="btn-clear-device-files" class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.4rem;">Clear</button>
+        </div>
+        <div id="device-backup-file-chips" style="max-height:80px; overflow-y:auto;"></div>
+      </div>
+
+      <div id="device-backup-progress-wrap" class="hidden" style="margin-top:0.85rem;">
+        <div style="display:flex; justify-content:space-between; font-size:0.76rem; margin-bottom:0.35rem;">
+          <span id="device-backup-progress-status" style="color:var(--text-cyan);">Uploading to Cloud...</span>
+          <span id="device-backup-progress-pct" style="font-weight:700; color:var(--text-pure);">0%</span>
+        </div>
+        <div class="task-progress-bar">
+          <div class="task-progress-fill task-progress-pulse" id="device-backup-progress-fill" style="width:0%;"></div>
+        </div>
+      </div>
+    </section>
 
     <!-- Active Cloud Storage Capacity & Connection Health Alerts Banner -->
     <section id="storage-alerts-container" class="hidden" style="margin-bottom: 1rem;">
@@ -152,7 +222,7 @@
     </section>
 
     <!-- Local Drives & Host Storage Capacity Health -->
-    <section class="section-panel" style="margin-bottom: 1.25rem;">
+    <section class="section-panel host-only" style="margin-bottom: 1.25rem;">
       <div class="section-header-row">
         <div class="section-title-wrap">
           <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" style="color: #38bdf8;"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>

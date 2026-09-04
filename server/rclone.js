@@ -984,6 +984,18 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
     }
   }
 
+  const taskOverallStartTime = Date.now();
+  const formatDuration = (sec) => {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) {
+      return `${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+    }
+    return `${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+  };
+
   onLog && onLog(`[AutoBackup Engine] Starting task "${task.name}" with ${sources.length} folder(s)... [Mode: ${mode.toUpperCase()}] [Conflict: ${conflict_mode.toUpperCase()}]${bwTag}${dryRunTag}\n`);
 
   let overallSuccess = true;
@@ -996,6 +1008,23 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   let isAnyPartial = false;
 
   for (let i = 0; i < sources.length; i++) {
+    const containerStartTime = Date.now();
+    const containerProgressWrapper = (rawProgress) => {
+      const totalElapsedSec = Math.max(0, Math.floor((Date.now() - taskOverallStartTime) / 1000));
+      const containerElapsedSec = Math.max(0, Math.floor((Date.now() - containerStartTime) / 1000));
+      const timingStr = `Total: ${formatDuration(totalElapsedSec)} | Container ${i + 1}/${sources.length}: ${formatDuration(containerElapsedSec)}`;
+      const enrichedProgress = `⏱️ [${timingStr}] ${rawProgress}`;
+      if (typeof onProgress === 'function') {
+        onProgress(enrichedProgress, {
+          totalElapsedSec,
+          containerElapsedSec,
+          currentContainer: i + 1,
+          totalContainers: sources.length,
+          timingStr,
+          rawProgress
+        });
+      }
+    };
     if (cancelledTasks.has(task.id)) {
       if (tempFilterFile && fs.existsSync(tempFilterFile)) { try { fs.unlinkSync(tempFilterFile); } catch (e) {} }
       onLog && onLog(`\n🛑 [Task Stopped] Backup task "${task.name}" execution was stopped by user.\n`);
@@ -1080,7 +1109,7 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
           targetZipDir = destination;
         }
 
-        res = await runSingleRcloneTransfer('copy', bundleRes.zipPath, targetZipDir, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun, options);
+        res = await runSingleRcloneTransfer('copy', bundleRes.zipPath, targetZipDir, conflict_mode, containerProgressWrapper, onLog, task.id, bw_limit, isDryRun, options);
 
         await bundler.cleanupBundle(bundleRes.zipPath);
       }
@@ -1089,7 +1118,7 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
       if (task.smart_code_filter === 0 || options.includeAllFiles === true) {
         directOptions.includeAllFiles = true;
       }
-      res = await runSingleRcloneTransfer(mode, srcPath, destination, conflict_mode, onProgress, onLog, task.id, bw_limit, isDryRun, directOptions);
+      res = await runSingleRcloneTransfer(mode, srcPath, destination, conflict_mode, containerProgressWrapper, onLog, task.id, bw_limit, isDryRun, directOptions);
     }
     accumulatedLog += res.output + '\n';
     totalDurationSec += res.durationSec;
@@ -1151,9 +1180,10 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   }
 
   // Format final summary
+  const totalTaskTimeSec = Math.max(1, Math.round((Date.now() - taskOverallStartTime) / 1000));
   let finalSpeedStr = '0 KiB/s';
-  if (totalBytesNum > 0 && totalDurationSec > 0) {
-    const bytesPerSec = totalBytesNum / totalDurationSec;
+  if (totalBytesNum > 0 && totalTaskTimeSec > 0) {
+    const bytesPerSec = totalBytesNum / totalTaskTimeSec;
     if (bytesPerSec >= 1024 * 1024) {
       finalSpeedStr = `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MiB/s`;
     } else if (bytesPerSec >= 1024) {
@@ -1164,6 +1194,7 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
   }
 
   onLog && onLog(`\n=== 📊 MULTI-CONTAINER TASK SUMMARY${dryRunTag} ===\n`);
+  onLog && onLog(`Total Time Elapsed: ${formatDuration(totalTaskTimeSec)}\n`);
   onLog && onLog(`Total Containers Processed: ${sources.length}\n`);
   onLog && onLog(`Successful: ${sources.length - failedSources.length} | Failed: ${failedSources.length}\n`);
   if (failedSources.length > 0) {
@@ -1183,7 +1214,8 @@ async function runBackupTask(task, onProgress, onLog, options = {}) {
     exitCode: overallSuccess ? 0 : -1,
     output: accumulatedLog,
     bytesTransferred: `${totalBytesTransferredStr} (${finalSpeedStr})`,
-    filesTransferred: sources.length
+    filesTransferred: sources.length,
+    totalDurationSec: totalTaskTimeSec
   };
 }
 

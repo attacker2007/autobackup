@@ -35,6 +35,9 @@ function boot() {
   initApp();
   initWebSocket();
   setupEventListeners();
+  initCompanionMode();
+  initWakeLock();
+  initDeviceBackup();
 }
 
 if (document.readyState === 'loading') {
@@ -443,6 +446,7 @@ function renderTasks() {
         <span>🕒 Schedule: <strong>${escapeHtml(scheduleDisplay)}</strong></span>
         <span>🕒 Last Run: ${task.last_run ? new Date(task.last_run).toLocaleString() : 'Never'}</span>
         <span>⏳ Next Run: <strong>${escapeHtml(nextRunDisplay)}</strong></span>
+        <span class="task-timing-badge ${isRunning ? '' : 'hidden'}" id="task-timing-${task.id}">⏱️ Total: 00m 00s</span>
         <span class="${statusClass}" id="status-pill-${task.id}" style="font-weight:700; font-size:0.72rem;">${statusLabel}</span>
       </div>
     `;
@@ -878,6 +882,7 @@ async function fetchRemotes(force = false) {
     renderRemotesStatusGrid();
     populateRemoteDropdown();
     populateTransferRemoteDropdowns();
+    populateDeviceBackupRemotes();
     fetchRemoteQuotas();
     return;
   }
@@ -897,6 +902,7 @@ async function fetchRemotes(force = false) {
     populateRemoteDropdown();
     populateTransferRemoteDropdowns();
     populateFilterRemoteDropdowns();
+    populateDeviceBackupRemotes();
 
     // Async fetch capacity quota info & auto-test connection statuses
     fetchRemoteQuotas();
@@ -1620,7 +1626,10 @@ function addActiveTransferBanner(transferId, taskName) {
     <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
       <span class="status-pill status-running">TRANSFERRING</span>
       <div>
-        <strong style="color: var(--text-main); font-size: 0.92rem;">⚡ ${escapeHtml(taskName)}</strong>
+        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+          <strong style="color: var(--text-main); font-size: 0.92rem;">⚡ ${escapeHtml(taskName)}</strong>
+          <span class="task-timing-badge" id="active-transfer-timer-${transferId}">⏱️ Total: 00m 00s</span>
+        </div>
         <div style="font-size: 0.78rem; color: var(--accent-primary);" id="active-transfer-pct-${transferId}">Streaming live output in console...</div>
       </div>
     </div>
@@ -1688,16 +1697,20 @@ function handleWebSocketMessage(msg) {
   if (type === 'task_started') {
     appendConsoleLine(`\n=== 🚀 TASK STARTED: ${data.taskName} ===`, 'system');
     setTaskStatusOptimistic(data.taskId, 'running');
-    if (data.taskName.includes('Cloud Transfer') || data.taskName.includes('Download')) {
+    startTaskLiveTimer(data.taskId, data.startTime ? new Date(data.startTime).getTime() : Date.now());
+    if (data.taskName.includes('Cloud Transfer') || data.taskName.includes('Download') || data.taskName.includes('Upload')) {
       addActiveTransferBanner(data.taskId, data.taskName);
     }
     fetchTasks();
+  } else if (type === 'task_tick') {
+    updateTaskLiveTimer(data.taskId, data.totalElapsedSec);
   } else if (type === 'task_log') {
     appendConsoleLine(data.logLine);
     parseAndUpdateProgress(data.taskId, data.logLine);
     updateActiveTransferProgress(data.taskId, data.logLine);
   } else if (type === 'task_progress') {
     updateProgressLine(data.progressText);
+    updateTaskLiveTimer(data.taskId, data.totalElapsedSec, data.timingStr);
   } else if (type === 'task_paused') {
     appendConsoleLine(`[Pause] ⏸️ Task paused: ${data.taskName} (Reason: ${data.reason || 'User'})`, 'system');
     setTaskStatusOptimistic(data.taskId, 'paused');
@@ -1718,6 +1731,7 @@ function handleWebSocketMessage(msg) {
     appendConsoleLine(`[Bandwidth Warning] ⚠️ Task ${data.taskId} severe slowdown detected (${data.speed || 'slow'}). Keeping connection alive and retrying chunks.`, 'error');
   } else if (type === 'task_finished') {
     removeProgressLine();
+    stopTaskLiveTimer(data.taskId, data.durationSec);
     const isPartial = data.isPartial || data.status === 'partial';
     let statusType = 'system';
     if (isPartial) statusType = 'warning';
@@ -5261,5 +5275,411 @@ function copyFailedFilesList() {
   }).catch(() => {
     alert('Failed to copy to clipboard.');
   });
+}
+
+// ─── Live Task Duration & Multi-Container Timing ────────────────────────────
+
+const taskLiveTimersMap = {};
+
+function formatSecondsToTimer(totalSec) {
+  totalSec = Math.max(0, Math.floor(totalSec));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) {
+    return `${String(h).padStart(2, '0')}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+  }
+  return `${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+}
+
+function startTaskLiveTimer(taskId, startMs) {
+  if (taskLiveTimersMap[taskId]) {
+    clearInterval(taskLiveTimersMap[taskId].intervalId);
+  }
+  const timerObj = {
+    startMs: startMs || Date.now(),
+    timingStr: null
+  };
+  const tickFn = () => {
+    const elapsedSec = Math.floor((Date.now() - timerObj.startMs) / 1000);
+    const displayStr = timerObj.timingStr || `Total: ${formatSecondsToTimer(elapsedSec)}`;
+    const timingBadge = document.getElementById(`task-timing-${taskId}`);
+    if (timingBadge) {
+      timingBadge.classList.remove('hidden', 'finished');
+      timingBadge.textContent = `⏱️ ${displayStr}`;
+    }
+    const bannerTimer = document.getElementById(`active-transfer-timer-${taskId}`);
+    if (bannerTimer) {
+      bannerTimer.textContent = `⏱️ ${displayStr}`;
+    }
+  };
+  timerObj.intervalId = setInterval(tickFn, 1000);
+  taskLiveTimersMap[taskId] = timerObj;
+  tickFn();
+}
+
+function updateTaskLiveTimer(taskId, totalElapsedSec, timingStr) {
+  let timerObj = taskLiveTimersMap[taskId];
+  if (!timerObj) {
+    startTaskLiveTimer(taskId, totalElapsedSec ? Date.now() - (totalElapsedSec * 1000) : Date.now());
+    timerObj = taskLiveTimersMap[taskId];
+  }
+  if (timingStr) {
+    timerObj.timingStr = timingStr;
+  }
+  const displayStr = timingStr || (totalElapsedSec ? `Total: ${formatSecondsToTimer(totalElapsedSec)}` : null);
+  if (displayStr) {
+    const timingBadge = document.getElementById(`task-timing-${taskId}`);
+    if (timingBadge) {
+      timingBadge.classList.remove('hidden', 'finished');
+      timingBadge.textContent = `⏱️ ${displayStr}`;
+    }
+    const bannerTimer = document.getElementById(`active-transfer-timer-${taskId}`);
+    if (bannerTimer) {
+      bannerTimer.textContent = `⏱️ ${displayStr}`;
+    }
+  }
+}
+
+function stopTaskLiveTimer(taskId, durationSec) {
+  const timerObj = taskLiveTimersMap[taskId];
+  if (timerObj) {
+    clearInterval(timerObj.intervalId);
+    delete taskLiveTimersMap[taskId];
+  }
+  const timingBadge = document.getElementById(`task-timing-${taskId}`);
+  if (timingBadge) {
+    const finalSec = durationSec || (timerObj ? Math.floor((Date.now() - timerObj.startMs) / 1000) : null);
+    if (finalSec) {
+      timingBadge.classList.remove('hidden');
+      timingBadge.classList.add('finished');
+      timingBadge.textContent = `⏱️ Total: ${formatSecondsToTimer(finalSec)}`;
+    }
+  }
+}
+
+// ─── Streamlined Companion Mode (Tablets & Secondary Devices) ───────────────
+
+function initCompanionMode() {
+  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  const isNarrowScreen = window.innerWidth <= 1024;
+  const isLanClient = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+  
+  const savedMode = localStorage.getItem('autobackup_view_mode');
+  let isCompanion = false;
+
+  if (savedMode === 'companion') {
+    isCompanion = true;
+  } else if (savedMode === 'host') {
+    isCompanion = false;
+  } else {
+    // Auto-detect: if on mobile, tablet, or accessing over LAN, default to Companion Mode!
+    isCompanion = isTouchDevice || isNarrowScreen || isLanClient;
+  }
+
+  applyCompanionMode(isCompanion);
+
+  const toggleBtn = document.getElementById('btn-toggle-device-mode');
+  if (toggleBtn) {
+    toggleBtn.onclick = () => {
+      const current = document.body.classList.contains('companion-mode');
+      const next = !current;
+      localStorage.setItem('autobackup_view_mode', next ? 'companion' : 'host');
+      applyCompanionMode(next);
+    };
+  }
+}
+
+function applyCompanionMode(isCompanion) {
+  const toggleBtn = document.getElementById('btn-toggle-device-mode');
+  const modeIcon = document.getElementById('device-mode-icon');
+  const modeLabel = document.getElementById('device-mode-label');
+
+  if (isCompanion) {
+    document.body.classList.add('companion-mode');
+    if (modeIcon) modeIcon.textContent = '📱';
+    if (modeLabel) modeLabel.textContent = 'Companion Mode';
+    if (toggleBtn) {
+      toggleBtn.title = 'In Companion Mode (host desktop clutter hidden). Click to switch to Host Admin Mode.';
+      toggleBtn.classList.add('active');
+    }
+  } else {
+    document.body.classList.remove('companion-mode');
+    if (modeIcon) modeIcon.textContent = '💻';
+    if (modeLabel) modeLabel.textContent = 'Host Admin Mode';
+    if (toggleBtn) {
+      toggleBtn.title = 'In Host Admin Mode (showing all local host controls). Click to switch to Companion Mode.';
+      toggleBtn.classList.remove('active');
+    }
+  }
+}
+
+// ─── Screen Wake Lock API ───────────────────────────────────────────────────
+
+let wakeLockSentinel = null;
+
+async function initWakeLock() {
+  const toggleBtn = document.getElementById('btn-toggle-wake-lock');
+  if (!toggleBtn) return;
+
+  if (!('wakeLock' in navigator)) {
+    toggleBtn.style.display = 'none';
+    return;
+  }
+
+  toggleBtn.onclick = async () => {
+    if (wakeLockSentinel) {
+      try {
+        await wakeLockSentinel.release();
+      } catch (e) {}
+      wakeLockSentinel = null;
+      updateWakeLockUI(false);
+    } else {
+      try {
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', () => {
+          wakeLockSentinel = null;
+          updateWakeLockUI(false);
+        });
+        updateWakeLockUI(true);
+      } catch (err) {
+        console.warn('Screen Wake Lock error:', err.message);
+        alert('Could not enable wake lock: ' + err.message);
+      }
+    }
+  };
+}
+
+function updateWakeLockUI(isActive) {
+  const toggleBtn = document.getElementById('btn-toggle-wake-lock');
+  const icon = document.getElementById('wake-lock-icon');
+  const label = document.getElementById('wake-lock-label');
+  if (isActive) {
+    if (icon) icon.textContent = '🟢';
+    if (label) label.textContent = 'Screen Awake';
+    if (toggleBtn) toggleBtn.style.borderColor = '#10b981';
+  } else {
+    if (icon) icon.textContent = '👁️';
+    if (label) label.textContent = 'Keep Awake';
+    if (toggleBtn) toggleBtn.style.borderColor = '';
+  }
+}
+
+// ─── Device Direct Backup to Cloud ─────────────────────────────────────────
+
+let selectedDeviceFiles = [];
+
+function initDeviceBackup() {
+  const selectBtn = document.getElementById('btn-select-device-files');
+  const fileInput = document.getElementById('device-backup-file-input');
+  const dropzone = document.getElementById('device-backup-dropzone');
+  const uploadBtn = document.getElementById('btn-upload-device-files');
+  const clearBtn = document.getElementById('btn-clear-device-files');
+
+  if (selectBtn && fileInput) {
+    selectBtn.onclick = () => fileInput.click();
+  }
+
+  if (dropzone && fileInput) {
+    dropzone.onclick = (e) => {
+      if (e.target !== selectBtn) fileInput.click();
+    };
+    dropzone.ondragover = (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    };
+    dropzone.ondragleave = () => dropzone.classList.remove('dragover');
+    dropzone.ondrop = (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer && e.dataTransfer.files) {
+        handleDeviceFilesSelected(Array.from(e.dataTransfer.files));
+      }
+    };
+  }
+
+  if (fileInput) {
+    fileInput.onchange = (e) => {
+      if (e.target.files) {
+        handleDeviceFilesSelected(Array.from(e.target.files));
+      }
+    };
+  }
+
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      selectedDeviceFiles = [];
+      updateDeviceFilesUI();
+    };
+  }
+
+  if (uploadBtn) {
+    uploadBtn.onclick = uploadDeviceFilesToCloud;
+  }
+
+  populateDeviceBackupRemotes();
+}
+
+function populateDeviceBackupRemotes() {
+  const sel = document.getElementById('device-backup-remote-select');
+  if (!sel) return;
+  sel.innerHTML = '';
+  if (!Array.isArray(currentRemotes) || currentRemotes.length === 0) {
+    sel.innerHTML = '<option value="">No remotes configured</option>';
+    return;
+  }
+  currentRemotes.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r.name;
+    opt.textContent = `☁️ ${r.name} (${r.type})`;
+    sel.appendChild(opt);
+  });
+}
+
+function handleDeviceFilesSelected(files) {
+  selectedDeviceFiles = files;
+  updateDeviceFilesUI();
+}
+
+function updateDeviceFilesUI() {
+  const summaryBox = document.getElementById('device-backup-file-summary');
+  const countText = document.getElementById('device-backup-count-text');
+  const chipsContainer = document.getElementById('device-backup-file-chips');
+  const uploadBtn = document.getElementById('btn-upload-device-files');
+
+  if (!summaryBox || !countText || !chipsContainer || !uploadBtn) return;
+
+  if (selectedDeviceFiles.length === 0) {
+    summaryBox.classList.add('hidden');
+    uploadBtn.disabled = true;
+    return;
+  }
+
+  let totalBytes = 0;
+  chipsContainer.innerHTML = '';
+  selectedDeviceFiles.forEach(f => {
+    totalBytes += f.size;
+    const chip = document.createElement('span');
+    chip.className = 'device-file-chip';
+    chip.textContent = `📄 ${f.name} (${formatFileSize(f.size)})`;
+    chipsContainer.appendChild(chip);
+  });
+
+  countText.textContent = `${selectedDeviceFiles.length} file(s) selected • Total: ${formatFileSize(totalBytes)}`;
+  summaryBox.classList.remove('hidden');
+  uploadBtn.disabled = false;
+}
+
+function getClientDeviceName() {
+  const ua = navigator.userAgent;
+  if (/iPad/i.test(ua)) return 'iPad';
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/Android.*Tablet/i.test(ua)) return 'Android_Tablet';
+  if (/Android/i.test(ua)) return 'Android_Phone';
+  if (/Macintosh/i.test(ua)) return 'Mac';
+  if (/Windows/i.test(ua)) return 'Windows_Laptop';
+  return 'Tablet_Device';
+}
+
+async function uploadDeviceFilesToCloud() {
+  const remoteSelect = document.getElementById('device-backup-remote-select');
+  const folderInput = document.getElementById('device-backup-folder-input');
+  const uploadBtn = document.getElementById('btn-upload-device-files');
+  const progressWrap = document.getElementById('device-backup-progress-wrap');
+  const progressStatus = document.getElementById('device-backup-progress-status');
+  const progressPct = document.getElementById('device-backup-progress-pct');
+  const progressFill = document.getElementById('device-backup-progress-fill');
+
+  const remote = remoteSelect?.value;
+  if (!remote) {
+    alert('Please select a target cloud remote.');
+    return;
+  }
+
+  if (selectedDeviceFiles.length === 0) {
+    alert('Please choose one or more files to back up.');
+    return;
+  }
+
+  const targetFolder = folderInput?.value?.trim() || '';
+  const deviceName = getClientDeviceName();
+
+  uploadBtn.disabled = true;
+  progressWrap.classList.remove('hidden');
+  progressStatus.textContent = 'Reading device files...';
+  progressPct.textContent = '0%';
+  progressFill.style.width = '5%';
+
+  try {
+    const filePayloads = [];
+    for (let i = 0; i < selectedDeviceFiles.length; i++) {
+      const file = selectedDeviceFiles[i];
+      progressStatus.textContent = `Preparing file ${i + 1}/${selectedDeviceFiles.length}: ${file.name}...`;
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = reader.result;
+          const commaIdx = res.indexOf(',');
+          resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      filePayloads.push({
+        path: file.webkitRelativePath || file.name,
+        data: base64Data
+      });
+      const pct = Math.round(((i + 1) / selectedDeviceFiles.length) * 40);
+      progressFill.style.width = `${pct}%`;
+      progressPct.textContent = `${pct}%`;
+    }
+
+    progressStatus.textContent = `Uploading ${filePayloads.length} file(s) to host PC & cloud remote "${remote}"...`;
+    progressFill.style.width = '60%';
+    progressPct.textContent = '60%';
+
+    const res = await fetch('/api/transfer/upload-files', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        remote,
+        targetPath: targetFolder,
+        deviceName,
+        files: filePayloads
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Cloud backup failed');
+    }
+
+    progressFill.style.width = '100%';
+    progressPct.textContent = '100%';
+    progressStatus.textContent = `✅ Successfully backed up ${data.filesUploaded} files to ${data.destSpec}!`;
+
+    appendConsoleLine(`[Device Backup] ✅ Successfully backed up ${data.filesUploaded} files from "${deviceName}" to ${data.destSpec}!`, 'system');
+
+    // Clear selection
+    selectedDeviceFiles = [];
+    const fileInput = document.getElementById('device-backup-file-input');
+    if (fileInput) fileInput.value = '';
+    updateDeviceFilesUI();
+
+    setTimeout(() => {
+      progressWrap.classList.add('hidden');
+      progressFill.style.width = '0%';
+      uploadBtn.disabled = false;
+    }, 4000);
+
+    fetchHistoryLogs();
+    fetchTasks();
+  } catch (err) {
+    progressStatus.textContent = `❌ Backup Error: ${err.message}`;
+    progressFill.style.width = '100%';
+    progressFill.style.background = '#fb7185';
+    alert('Device Backup Failed: ' + err.message);
+    uploadBtn.disabled = false;
+  }
 }
 
