@@ -603,7 +603,25 @@ app.get('/api/status', async (req, res) => {
 
     const hasSeed = fs.existsSync(path.join(__dirname, 'default_config.json')) || fs.existsSync(path.join(CONFIG_DIR, 'autobackup-current-config.json'));
 
+    const rawClientIp = (req.socket.remoteAddress || req.ip || '').replace(/^::ffff:/, '');
+    let isClientHost = (rawClientIp === '127.0.0.1' || rawClientIp === '::1' || rawClientIp === 'localhost');
+    if (!isClientHost) {
+      try {
+        const interfaces = os.networkInterfaces();
+        for (const iface of Object.values(interfaces)) {
+          for (const alias of iface) {
+            if (alias.address === rawClientIp) {
+              isClientHost = true;
+              break;
+            }
+          }
+          if (isClientHost) break;
+        }
+      } catch (e) {}
+    }
+
     res.json({
+      isHost: isClientHost,
       rcloneInstalled: isRcloneInstalled,
       activeTasksCount: tasksCount.count,
       connectedRemotesCount: remotes.length,
@@ -2587,15 +2605,28 @@ app.post('/api/transfer/upload-files', async (req, res) => {
       startTime
     });
 
-    // Create temp staging directory for uploaded files
-    const uploadsTempDir = path.join(CONFIG_DIR, 'uploads', logId);
-    fs.mkdirSync(uploadsTempDir, { recursive: true });
+    let detectedFolderName = '';
+    const firstWithRel = files.find(f => f.path && (f.path.includes('/') || f.path.includes('\\')));
+    if (firstWithRel) {
+      const parts = firstWithRel.path.replace(/\\/g, '/').split('/');
+      detectedFolderName = parts[0] || 'Files';
+    } else if (cleanTargetPath && !cleanTargetPath.includes('/')) {
+      detectedFolderName = cleanTargetPath;
+    } else {
+      const now = new Date();
+      detectedFolderName = `Backup_${now.toISOString().slice(0, 10)}`;
+    }
+
+    // Persist files into a permanent companion source directory on the host PC
+    const safeDev = deviceName.replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const companionSourcesDir = path.join(CONFIG_DIR, 'companion_sources', safeDev, detectedFolderName);
+    fs.mkdirSync(companionSourcesDir, { recursive: true });
 
     let totalBytes = 0;
     for (const f of files) {
       if (!f.path || !f.data) continue;
       const cleanRelPath = f.path.replace(/^(\.\.[\/\\])+/, '').replace(/^[\\\/]+/, '');
-      const fullDest = path.join(uploadsTempDir, cleanRelPath);
+      const fullDest = path.join(companionSourcesDir, cleanRelPath);
       fs.mkdirSync(path.dirname(fullDest), { recursive: true });
 
       const buffer = Buffer.from(f.data, 'base64');
@@ -2603,12 +2634,25 @@ app.post('/api/transfer/upload-files', async (req, res) => {
       totalBytes += buffer.length;
     }
 
-    // Use rclone to copy staging folder to remote:targetPath
+    // Automatically register as a permanent Source Folder in AutoBackup so it can be backed up even when device is off
+    const sourceName = `📱 [${deviceName}] ${detectedFolderName}`;
+    const containerPath = hostPathToContainerPath(companionSourcesDir);
+    const existingSource = await db.get('SELECT id FROM sources WHERE host_path = ? OR name = ?', [companionSourcesDir, sourceName]);
+    let sourceId = existingSource?.id;
+    if (!sourceId) {
+      sourceId = uuidv4();
+      await db.run(
+        'INSERT INTO sources (id, name, host_path, container_path, tags) VALUES (?, ?, ?, ?, ?)',
+        [sourceId, sourceName, companionSourcesDir, containerPath, `companion,${safeDev.toLowerCase()}`]
+      );
+    }
+
+    // Use rclone to copy companion folder to remote:targetPath
     const destSpec = cleanTargetPath ? `${remote}:${cleanTargetPath}` : `${remote}:`;
-    broadcastWS('task_log', { taskId: logId, logId, logLine: `[Device Upload] Staged ${files.length} file(s) from "${deviceName}" (${(totalBytes / 1024 / 1024).toFixed(2)} MB). Transferring to ${destSpec}...\n` });
+    broadcastWS('task_log', { taskId: logId, logId, logLine: `[Device Upload] Staged ${files.length} file(s) into Source Folder "${sourceName}" (${(totalBytes / 1024 / 1024).toFixed(2)} MB). Transferring to ${destSpec}...\n` });
 
     const rcloneRes = await rclone.execRclone([
-      'copy', uploadsTempDir, destSpec,
+      'copy', companionSourcesDir, destSpec,
       '--stats', '1s',
       '--transfers', '16',
       '--checkers', '32',
@@ -2618,11 +2662,6 @@ app.post('/api/transfer/upload-files', async (req, res) => {
       '--fast-list',
       '--multi-thread-streams', '4'
     ]);
-
-    // Clean up staging directory
-    try {
-      fs.rmSync(uploadsTempDir, { recursive: true, force: true });
-    } catch (e) {}
 
     const endTime = new Date().toISOString();
     const isSuccess = rcloneRes.success;
@@ -2660,7 +2699,16 @@ app.post('/api/transfer/upload-files', async (req, res) => {
         filesTransferred: files.length,
         endTime
       });
-      return res.json({ success: true, filesUploaded: files.length, totalBytes, targetPath: cleanTargetPath, destSpec });
+      return res.json({
+        success: true,
+        filesUploaded: files.length,
+        totalBytes,
+        targetPath: cleanTargetPath,
+        destSpec,
+        sourceName,
+        sourceId,
+        hostPath: companionSourcesDir
+      });
     } else {
       broadcastWS('task_log', { taskId: logId, logId, logLine: `[Device Upload] ❌ Upload failed: ${rcloneRes.output}\n` });
       broadcastWS('task_finished', {
@@ -2691,6 +2739,44 @@ app.get('/api/logs', async (req, res) => {
     );
     const total = await db.get('SELECT COUNT(*) as count FROM logs');
     res.json({ logs, total: total.count, limit, offset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Export complete execution logs as JSON or CSV
+ */
+app.get('/api/logs/export', async (req, res) => {
+  try {
+    const format = (req.query.format || 'json').toLowerCase();
+    const rows = await db.all('SELECT id, task_id, task_name, start_time, end_time, status, bytes_transferred, files_transferred, output FROM logs ORDER BY start_time DESC');
+    const dateStr = new Date().toISOString().slice(0, 10);
+
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="autobackup-history-logs-${dateStr}.csv"`);
+      
+      const csvHeader = 'id,task_name,status,start_time,end_time,bytes_transferred,files_transferred\n';
+      const csvRows = rows.map(r => {
+        const esc = (str) => `"${(str ? String(str) : '').replace(/"/g, '""')}"`;
+        return [
+          esc(r.id),
+          esc(r.task_name),
+          esc(r.status),
+          esc(r.start_time),
+          esc(r.end_time),
+          esc(r.bytes_transferred),
+          r.files_transferred || 0
+        ].join(',');
+      }).join('\n');
+
+      return res.send(csvHeader + csvRows);
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="autobackup-history-logs-${dateStr}.json"`);
+    res.send(JSON.stringify(rows, null, 2));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1631,15 +1631,19 @@ input[type="checkbox"] {
    STREAMLINED COMPANION MODE (TABLETS & SECONDARY DEVICES)
    ========================================================================== */
 
-/* Host Device hides companion-only elements (like the device backup top bar) */
-body.host-device .companion-only,
-body:not(.companion-device) .companion-only {
+/* Host Device: ALWAYS hide companion-only elements (like the device backup top bar) */
+body.host-device .companion-only {
   display: none !important;
 }
 
+/* Host Device: ALWAYS ensure host settings and controls are visible */
+body.host-device .host-only {
+  display: revert !important;
+}
+
 /* Companion Mode hides desktop host clutter (metric counters, host drive meters, admin buttons) */
-body.companion-mode .host-only,
-body.companion-device .host-only {
+body.companion-device:not(.host-device) .host-only,
+body.companion-mode:not(.host-device) .host-only {
   display: none !important;
 }
 

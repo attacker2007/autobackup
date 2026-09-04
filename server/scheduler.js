@@ -630,11 +630,6 @@ class TaskScheduler {
       ]
     );
 
-    // Auto-prune old logs: keep only the latest 100 entries to prevent database bloat
-    try {
-      await db.run(`DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY start_time DESC LIMIT 100)`);
-    } catch (e) {}
-
     await db.run('UPDATE tasks SET last_status = ?, next_run = ? WHERE id = ?', [finalStatus, nextRun, taskId]);
 
     this.runningTasks.delete(taskId);

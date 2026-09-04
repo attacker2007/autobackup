@@ -9,6 +9,7 @@ let isCustomSourceMode = false;
 
 function isHostDevice() {
   if (window.desktopApi) return true;
+  if (window.__serverIsHost !== undefined) return window.__serverIsHost;
   const h = window.location.hostname;
   return (h === 'localhost' || h === '127.0.0.1' || h === '[::1]');
 }
@@ -212,6 +213,11 @@ async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
+
+    if (data.isHost !== undefined) {
+      window.__serverIsHost = data.isHost;
+      applyCompanionMode(!isHostDevice());
+    }
 
     document.getElementById('stat-active-tasks').textContent = data.activeTasksCount || 0;
     document.getElementById('stat-remotes-count').textContent = data.connectedRemotesCount || 0;
@@ -869,7 +875,17 @@ function renderDashboardTreeExplorer() {
     return;
   }
 
+  const isCompanion = !isHostDevice();
   let sourcesToRender = detectedSources;
+
+  if (isCompanion) {
+    const devName = getClientDeviceName().toLowerCase();
+    sourcesToRender = sourcesToRender.filter(s => {
+      const tags = (s.tags || '').toLowerCase();
+      const name = (s.name || '').toLowerCase();
+      return tags.includes('companion') || tags.includes(devName) || name.includes('📱') || name.includes(devName);
+    });
+  }
 
   if (activeSourceTagFilter !== 'all') {
     const targetTag = activeSourceTagFilter.toLowerCase();
@@ -890,7 +906,11 @@ function renderDashboardTreeExplorer() {
   }
 
   if (sourcesToRender.length === 0) {
-    dashboardContainer.innerHTML = '<div class="empty-state"><p>No source folders match the current filter/search.</p></div>';
+    if (isCompanion) {
+      dashboardContainer.innerHTML = '<div class="empty-state"><p>No source folders added from this device yet. Use <strong>Backup This Device to Cloud</strong> above to add folders from this device.</p></div>';
+    } else {
+      dashboardContainer.innerHTML = '<div class="empty-state"><p>No source folders match the current filter/search.</p></div>';
+    }
     return;
   }
 
@@ -1025,8 +1045,8 @@ async function fetchRemoteQuotas() {
 }
 
 async function fetchSingleRemoteQuota(remoteName, attempt) {
-  const MAX_ATTEMPTS = 4;
-  const RETRY_DELAYS_MS = [2000, 4000, 8000, 15000];
+  const MAX_ATTEMPTS = 2;
+  const RETRY_DELAYS_MS = [3000, 6000];
 
   if (attempt === 0) {
     remoteQuotaFetchingSet.add(remoteName);
@@ -1042,20 +1062,16 @@ async function fetchSingleRemoteQuota(remoteName, attempt) {
       remoteQuotaFetchingSet.delete(remoteName);
       renderRemotesStatusGrid();
     } else if (data.pending && attempt < MAX_ATTEMPTS) {
-      setTimeout(() => fetchSingleRemoteQuota(remoteName, attempt + 1), RETRY_DELAYS_MS[attempt]);
+      setTimeout(() => fetchSingleRemoteQuota(remoteName, attempt + 1), RETRY_DELAYS_MS[attempt] || 4000);
     } else {
       remoteQuotaMap[remoteName] = data;
       remoteQuotaFetchingSet.delete(remoteName);
       renderRemotesStatusGrid();
     }
   } catch (e) {
-    if (attempt < MAX_ATTEMPTS) {
-      setTimeout(() => fetchSingleRemoteQuota(remoteName, attempt + 1), RETRY_DELAYS_MS[attempt]);
-    } else {
-      remoteQuotaMap[remoteName] = { success: false, error: e.message };
-      remoteQuotaFetchingSet.delete(remoteName);
-      renderRemotesStatusGrid();
-    }
+    remoteQuotaMap[remoteName] = { success: false, error: e.message };
+    remoteQuotaFetchingSet.delete(remoteName);
+    renderRemotesStatusGrid();
   }
 }
 
@@ -1132,11 +1148,14 @@ function renderRemotesStatusGrid() {
         </div>
       `;
     } else if (quota && quota.success === false) {
+      const isUnsupported = quota.unsupported || (quota.error && (quota.error.includes('not supported') || quota.error.includes('unsupported')));
       quotaHtml = `
         <div style="margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
-          <span style="color: #cbd5e1; font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Quota: ${escapeHtml(quota.error || 'Unavailable')}</span>
+          <span style="color: ${isUnsupported ? 'var(--text-muted)' : '#f87171'}; font-size: 0.72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(quota.error || '')}">
+            ${isUnsupported ? '☁️ Quota not supported by provider' : `⚠️ ${escapeHtml(quota.error || 'Temporarily unavailable')}`}
+          </span>
           <button type="button" class="btn btn-sm btn-outline" style="font-size: 0.68rem; padding: 0.1rem 0.4rem; color: #38bdf8; border-color: rgba(56,189,248,0.3); white-space: nowrap;" onclick="fetchSingleRemoteQuota('${escapeHtml(remoteName)}', 0)">
-            🔄 Retry
+            🔄 Check
           </button>
         </div>
       `;
@@ -2940,6 +2959,9 @@ function setupEventListeners() {
   document.getElementById('btn-open-link-device')?.addEventListener('click', openLinkDeviceModal);
   document.getElementById('btn-bulk-remove-sources')?.addEventListener('click', openBulkRemoveModal);
   document.getElementById('btn-publish-discord-release')?.addEventListener('click', publishReleaseToDiscord);
+  document.getElementById('btn-export-logs')?.addEventListener('click', () => {
+    window.open('/api/logs/export?format=json', '_blank');
+  });
 
   window.addEventListener('online', () => handleNetworkStatusChange(true, 'Internet connection restored'));
   window.addEventListener('offline', () => handleNetworkStatusChange(false, 'Internet connection disconnected'));
@@ -5422,62 +5444,34 @@ function stopTaskLiveTimer(taskId, durationSec) {
 // ─── Streamlined Companion Mode (Tablets & Secondary Devices) ───────────────
 
 function initCompanionMode() {
+  localStorage.removeItem('autobackup_view_mode');
   const host = isHostDevice();
-  const savedMode = localStorage.getItem('autobackup_view_mode');
-  let isCompanion = false;
-
-  if (host) {
-    // If on host PC (Electron or localhost), default to Host Mode unless explicitly switched
-    isCompanion = (savedMode === 'companion');
-  } else {
-    // Remote device (tablet, phone, LAN browser): default to Companion Mode
-    isCompanion = (savedMode !== 'host');
-  }
-
-  applyCompanionMode(isCompanion);
-
-  const toggleBtn = document.getElementById('btn-toggle-device-mode');
-  if (toggleBtn) {
-    toggleBtn.onclick = () => {
-      const current = document.body.classList.contains('companion-mode');
-      const next = !current;
-      localStorage.setItem('autobackup_view_mode', next ? 'companion' : 'host');
-      applyCompanionMode(next);
-    };
-  }
+  applyCompanionMode(!host);
 }
 
 function applyCompanionMode(isCompanion) {
-  const toggleBtn = document.getElementById('btn-toggle-device-mode');
-  const modeIcon = document.getElementById('device-mode-icon');
-  const modeLabel = document.getElementById('device-mode-label');
   const headerBadge = document.getElementById('header-device-badge');
+  const sourcesTitle = document.getElementById('sources-section-title');
 
   if (isCompanion) {
     document.body.classList.add('companion-mode', 'companion-device');
     document.body.classList.remove('host-device');
-    if (modeIcon) modeIcon.textContent = '📱';
-    if (modeLabel) modeLabel.textContent = 'Companion Mode';
-    if (toggleBtn) {
-      toggleBtn.title = 'In Companion Mode (host desktop clutter hidden). Click to switch to Host Admin Mode.';
-      toggleBtn.classList.add('active');
-    }
     if (headerBadge) {
       headerBadge.textContent = `📱 Companion (${getClientDeviceName()})`;
+    }
+    if (sourcesTitle) {
+      sourcesTitle.innerHTML = `📱 Source Folders (This Device)`;
     }
   } else {
     document.body.classList.remove('companion-mode', 'companion-device');
     document.body.classList.add('host-device');
-    if (modeIcon) modeIcon.textContent = '💻';
-    if (modeLabel) modeLabel.textContent = 'Host Admin Mode';
-    if (toggleBtn) {
-      toggleBtn.title = 'In Host Admin Mode (showing all local host controls). Click to switch to Companion Mode.';
-      toggleBtn.classList.remove('active');
-    }
     if (headerBadge) {
       const nodeInput = document.getElementById('setting-device-name-input');
       const hostName = nodeInput?.value || 'Host PC';
       headerBadge.textContent = `💻 Host: ${hostName}`;
+    }
+    if (sourcesTitle) {
+      sourcesTitle.innerHTML = `Mounted Source Folders (<code style="color: var(--accent-cyan); font-size: 0.95rem;">root/</code>)`;
     }
   }
 }
@@ -5774,9 +5768,9 @@ async function uploadDeviceFilesToCloud() {
 
     progressFill.style.width = '100%';
     progressPct.textContent = '100%';
-    progressStatus.textContent = `✅ Successfully backed up ${data.filesUploaded} files to ${data.destSpec}!`;
+    progressStatus.textContent = `✅ Saved to Host as Source Folder "${data.sourceName || 'Device Source'}" & backed up to ${data.destSpec}!`;
 
-    appendConsoleLine(`[Device Backup] ✅ Successfully backed up ${data.filesUploaded} files from "${deviceName}" to ${data.destSpec}!`, 'system');
+    appendConsoleLine(`[Device Backup] ✅ Saved to Host as Source Folder "${data.sourceName || 'Device Source'}" & backed up ${data.filesUploaded} files from "${deviceName}" to ${data.destSpec}!`, 'system');
 
     // Clear selection
     selectedDeviceFiles = [];
@@ -5792,6 +5786,7 @@ async function uploadDeviceFilesToCloud() {
       uploadBtn.disabled = false;
     }, 4000);
 
+    fetchSources();
     fetchHistoryLogs();
     fetchTasks();
   } catch (err) {

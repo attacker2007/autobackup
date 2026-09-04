@@ -1309,8 +1309,10 @@ async function retryFailedFiles(task, failedFileItems, onProgress, onLog) {
 
 // In-memory cache for cloud remote quota info
 const remoteAboutCacheMap = new Map();
-const SUCCESS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes for valid quota
-const ERROR_CACHE_TTL_MS = 15 * 1000;       // 15 seconds for errors/timeouts so it retries quickly
+const SUCCESS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes for valid quota
+const ERROR_CACHE_TTL_MS = 3 * 60 * 1000;    // 3 minutes for errors/timeouts to prevent retry storm
+
+let aboutQueryQueue = Promise.resolve();
 
 /**
  * Query cloud storage quota/capacity metrics via `rclone about` (Cached & Resilient)
@@ -1324,9 +1326,23 @@ async function getRemoteAbout(remoteName) {
     }
   }
 
+  // Queue query to prevent multiple concurrent rclone about processes causing API rate-limit/timeout storms
+  return new Promise((resolve) => {
+    aboutQueryQueue = aboutQueryQueue.then(async () => {
+      try {
+        const result = await executeRemoteAbout(remoteName);
+        resolve(result);
+      } catch (err) {
+        resolve({ success: false, error: err.message });
+      }
+    });
+  });
+}
+
+async function executeRemoteAbout(remoteName) {
   try {
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Cloud quota response timeout')), 12000));
-    const rclonePromise = execRclone(['about', `${remoteName}:`, '--json', '--timeout', '10s', '--contimeout', '6s']);
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Cloud quota response timeout (provider slow or rate-limited)')), 28000));
+    const rclonePromise = execRclone(['about', `${remoteName}:`, '--json', '--timeout', '25s', '--contimeout', '15s']);
 
     const res = await Promise.race([rclonePromise, timeoutPromise]);
     if (res && res.success && res.output) {
@@ -1358,9 +1374,14 @@ async function getRemoteAbout(remoteName) {
       remoteAboutCacheMap.set(remoteName, { data: result, timestamp: Date.now(), isError: false });
       return result;
     }
+
+    if (res && !res.success && res.output && (res.output.includes("doesn't support about") || res.output.includes('not supported') || res.output.includes('needs a remote'))) {
+      const fallbackResult = { success: false, unsupported: true, error: 'Quota not supported by cloud provider' };
+      remoteAboutCacheMap.set(remoteName, { data: fallbackResult, timestamp: Date.now(), isError: true });
+      return fallbackResult;
+    }
   } catch (e) {
     const humanizedErr = humanizeRcloneError(e ? e.message : '', remoteName);
-    console.error(`[Rclone] getRemoteAbout error for ${remoteName}:`, humanizedErr);
     const fallbackResult = { success: false, error: humanizedErr };
     remoteAboutCacheMap.set(remoteName, { data: fallbackResult, timestamp: Date.now(), isError: true });
     return fallbackResult;

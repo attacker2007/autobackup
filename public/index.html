@@ -53,9 +53,6 @@
       <div class="status-beacon" id="system-status-badge">
         <span class="pulse-dot"></span> System Online
       </div>
-      <button class="btn btn-secondary host-only" id="btn-toggle-device-mode" title="Toggle between Companion Mode and Host Admin Mode">
-        <span id="device-mode-icon">📱</span> <span id="device-mode-label">Companion Mode</span>
-      </button>
       <button class="btn btn-secondary companion-only" id="btn-toggle-wake-lock" title="Keep tablet screen awake while viewing live backup">
         <span id="wake-lock-icon">👁️</span> <span id="wake-lock-label">Keep Awake</span>
       </button>
@@ -245,23 +242,23 @@
       </div>
     </section>
 
-    <!-- Mounted Container Volumes Explorer (root/) -->
-    <section class="section-panel host-only">
+    <!-- Source Folders Explorer (Host drives on PC, or Companion Device Folders on tablet) -->
+    <section class="section-panel" id="sources-section-panel">
       <div class="section-header-row">
         <div class="section-title-wrap">
           <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" style="color: var(--accent-purple);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-          <h2 class="section-title">Mounted Source Folders (<code style="color: var(--accent-cyan); font-size: 0.95rem;">root/</code>)</h2>
+          <h2 class="section-title" id="sources-section-title">Mounted Source Folders (<code style="color: var(--accent-cyan); font-size: 0.95rem;">root/</code>)</h2>
         </div>
         <div style="display: flex; gap: 0.45rem; flex-wrap: wrap;">
-          <button class="btn btn-sm btn-primary" id="btn-add-source">
+          <button class="btn btn-sm btn-primary host-only" id="btn-add-source">
             <svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.5" fill="none"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             Add Source Folder
           </button>
-          <button class="btn btn-sm btn-outline-danger" id="btn-sources-bulk-actions" onclick="openBulkRemoveModal()">
+          <button class="btn btn-sm btn-outline-danger host-only" id="btn-sources-bulk-actions" onclick="openBulkRemoveModal()">
             🗑️ Bulk Actions
           </button>
-          <button class="btn btn-sm btn-secondary" id="btn-dashboard-expand-tree">Expand All</button>
-          <button class="btn btn-sm btn-secondary" id="btn-dashboard-collapse-tree">Collapse All</button>
+          <button class="btn btn-sm btn-secondary host-only" id="btn-dashboard-expand-tree">Expand All</button>
+          <button class="btn btn-sm btn-secondary host-only" id="btn-dashboard-collapse-tree">Collapse All</button>
         </div>
       </div>
 
@@ -347,6 +344,9 @@
             <option value="stopped">Stopped Only</option>
           </select>
           <button class="btn btn-sm btn-outline" id="btn-refresh-logs">Refresh</button>
+          <button class="btn btn-sm btn-secondary" id="btn-export-logs" title="Export all historical logs to JSON file">
+            📥 Export Logs
+          </button>
         </div>
       </div>
 
