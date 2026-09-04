@@ -685,14 +685,14 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
       '-v',
       '-P',
       '--stats', '1s',
-      '--transfers', '4',
-      '--checkers', '8',
+      '--transfers', '8',
+      '--checkers', '16',
       '--drive-chunk-size', '64M',
-      '--buffer-size', '16M',
+      '--buffer-size', '4M',
       '--use-mmap',
       '--multi-thread-streams', '4',
-      '--multi-thread-cutoff', '64M',
-      '--max-backlog', '200000',
+      '--multi-thread-cutoff', '32M',
+      '--max-backlog', '300000',
       '--fast-list',
       '--ignore-errors',
       '--timeout', '30s',
@@ -701,6 +701,22 @@ function runSingleRcloneTransfer(mode, sourcePath, destination, conflictMode, on
       '--retries', '2',
       '--retries-sleep', '2s'
     ];
+
+    // Exclude massive disposable dependency & cache folders to keep transfers high-speed
+    if (options && options.excludePatterns && Array.isArray(options.excludePatterns)) {
+      for (const pattern of options.excludePatterns) {
+        args.push('--exclude', pattern);
+      }
+    } else if (!options || options.includeAllFiles !== true) {
+      args.push(
+        '--exclude', 'node_modules/**',
+        '--exclude', '.next/**',
+        '--exclude', '.cache/**',
+        '--exclude', '__pycache__/**',
+        '--exclude', 'Thumbs.db',
+        '--exclude', '.DS_Store'
+      );
+    }
 
     if (options && options.filesFrom && fs.existsSync(options.filesFrom)) {
       args.push('--files-from-raw', options.filesFrom);

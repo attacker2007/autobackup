@@ -14,6 +14,14 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
+  "files": [
+    "server/**/*",
+    "public/**/*",
+    "scripts/download-rclone.js",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
