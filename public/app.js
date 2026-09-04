@@ -537,10 +537,27 @@ function buildContainerTree(sourcesList) {
     hostPath: null
   };
 
+  const isCompanion = !isHostDevice();
+
   sourcesList.forEach(src => {
     if (!src || !src.containerPath) return;
-    const raw = String(src.containerPath).replace(/^(\/|root\/)+/, '').replace(/\/$/, '');
-    const parts = raw.split('/').filter(Boolean);
+
+    const isCompanionSource = src.tags && src.tags.toLowerCase().includes('companion');
+    let parts;
+
+    if (isCompanionSource) {
+      if (isCompanion) {
+        // On companion device, show device source folders directly at top level
+        const cleanName = (src.name || 'Device Folder').replace(/^📱\s*\[[^\]]+\]\s*/, '');
+        parts = [cleanName || src.name];
+      } else {
+        // On host laptop, neatly categorize under dedicated Companion Sources group
+        parts = ['📱 Companion Sources', src.name || 'Device Folder'];
+      }
+    } else {
+      const raw = String(src.containerPath).replace(/^(\/|root\/)+/, '').replace(/\/$/, '');
+      parts = raw.split('/').filter(Boolean);
+    }
 
     let curr = root;
     parts.forEach((part, idx) => {
@@ -560,6 +577,15 @@ function buildContainerTree(sourcesList) {
           formattedSize: isLeaf ? src.formattedSize : null,
           fileCount: isLeaf ? src.fileCount : null
         };
+      } else if (isLeaf) {
+        curr.children[part].containerPath = src.containerPath;
+        curr.children[part].hostPath = src.hostPath;
+        curr.children[part].sourceId = src.id;
+        curr.children[part].sourceType = src.source;
+        curr.children[part].tags = src.tags;
+        curr.children[part].totalBytes = src.totalBytes;
+        curr.children[part].formattedSize = src.formattedSize;
+        curr.children[part].fileCount = src.fileCount;
       }
       curr = curr.children[part];
     });
@@ -973,10 +999,9 @@ async function fetchRemotes(force = false) {
     populateFilterRemoteDropdowns();
     populateDeviceBackupRemotes();
 
-    // Async fetch capacity quota info & auto-test connection statuses on host PC only
+    // Async fetch capacity quota info on host PC only (heavy speed/health ping only runs on user click)
     if (!isCompanion) {
       fetchRemoteQuotas();
-      testAllRemotes(true);
     }
     lastRemotesFetchTime = Date.now();
   } catch (err) {
@@ -1696,7 +1721,7 @@ function addActiveTransferBanner(transferId, taskName) {
 
   card = document.createElement('div');
   card.id = `active-transfer-card-${transferId}`;
-  card.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; border-radius: 8px; background: rgba(0, 242, 254, 0.08); margin-bottom: 0.5rem;';
+  card.className = 'active-transfer-card';
   container.appendChild(card);
 
   card.innerHTML = `
@@ -1804,6 +1829,8 @@ function handleWebSocketMessage(msg) {
     if (data.message && data.message.includes('Launching instant backup')) {
       window.desktopApi?.showNotification?.('⚡ Instant Sync Triggered', data.message);
     }
+  } else if (type === 'sources_updated') {
+    fetchSources();
   } else if (type === 'task_slowdown') {
     appendConsoleLine(`[Bandwidth Warning] ⚠️ Task ${data.taskId} severe slowdown detected (${data.speed || 'slow'}). Keeping connection alive and retrying chunks.`, 'error');
   } else if (type === 'task_finished') {
@@ -2253,6 +2280,7 @@ async function startDeviceToCloudUpload() {
       body: JSON.stringify({
         remote,
         targetPath,
+        deviceName: getClientDeviceName(),
         files: filePayloads
       })
     });
@@ -2268,6 +2296,9 @@ async function startDeviceToCloudUpload() {
 
     alert(`✅ Successfully uploaded ${data.filesUploaded} files to ${remote}:${targetPath || '/'}`);
     appendConsoleLine(`[System] ✅ Successfully uploaded ${data.filesUploaded} files to ${remote}:${targetPath || '/'}`, 'system');
+
+    fetchSources();
+    fetchHistoryLogs();
 
     // Reset upload form
     uploadStagedFiles = [];

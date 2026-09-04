@@ -137,7 +137,7 @@ function getFolderQuickStats(folderPath) {
       totalBytes,
       fileCount: files.length,
       formattedSize: formatBytes(totalBytes),
-      expiresAt: now + 45000 // 45s cache
+      expiresAt: now + 10 * 60 * 1000 // 10-minute cache
     };
     folderStatsCache.set(normalized, res);
     return res;
@@ -718,12 +718,29 @@ app.get('/api/sources', async (req, res) => {
     }
 
     const sourcesList = Array.from(sourcesMap.values());
+    const now = Date.now();
     for (const item of sourcesList) {
       const p = item.hostPath || item.containerPath;
-      const stats = getFolderQuickStats(p);
-      item.totalBytes = stats.totalBytes;
-      item.fileCount = stats.fileCount;
-      item.formattedSize = stats.formattedSize;
+      if (!p) continue;
+      const normalized = path.normalize(p);
+      if (folderStatsCache.has(normalized)) {
+        const cached = folderStatsCache.get(normalized);
+        if (now < cached.expiresAt) {
+          item.totalBytes = cached.totalBytes;
+          item.fileCount = cached.fileCount;
+          item.formattedSize = cached.formattedSize;
+          continue;
+        }
+      }
+      // Instant shallow check to prevent freezing the server on boot
+      try {
+        const exists = fs.existsSync(normalized);
+        item.totalBytes = null;
+        item.fileCount = null;
+        item.formattedSize = exists ? null : 'Path Missing';
+      } catch (e) {
+        item.formattedSize = 'Path Missing';
+      }
     }
     res.json(sourcesList);
   } catch (err) {
@@ -1049,12 +1066,19 @@ app.get('/api/sources/browse', (req, res) => {
   }
 });
 
+let cachedStorageDrives = null;
+let cachedStorageExpiresAt = 0;
+
 /**
  * System Storage Health & Drive Capacity Inspection
  * Uses native fs.statfsSync to retrieve total, used, and free space across local storage drives.
  */
 app.get('/api/system/storage', (req, res) => {
   try {
+    const now = Date.now();
+    if (cachedStorageDrives && now < cachedStorageExpiresAt && req.query.force !== 'true') {
+      return res.json({ drives: cachedStorageDrives });
+    }
     const drives = [];
     if (process.platform === 'win32') {
       const letters = ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'Z'];
@@ -1116,6 +1140,8 @@ app.get('/api/system/storage', (req, res) => {
       }
     }
 
+    cachedStorageDrives = drives;
+    cachedStorageExpiresAt = now + 60 * 1000;
     res.json({ success: true, drives, timestamp: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2610,8 +2636,9 @@ app.post('/api/transfer/upload-files', async (req, res) => {
     if (firstWithRel) {
       const parts = firstWithRel.path.replace(/\\/g, '/').split('/');
       detectedFolderName = parts[0] || 'Files';
-    } else if (cleanTargetPath && !cleanTargetPath.includes('/')) {
-      detectedFolderName = cleanTargetPath;
+    } else if (cleanTargetPath) {
+      const segs = cleanTargetPath.split(/[\\\/]/).filter(Boolean);
+      detectedFolderName = segs.length > 0 ? segs[segs.length - 1] : cleanTargetPath;
     } else {
       const now = new Date();
       detectedFolderName = `Backup_${now.toISOString().slice(0, 10)}`;
@@ -2637,7 +2664,10 @@ app.post('/api/transfer/upload-files', async (req, res) => {
     // Automatically register as a permanent Source Folder in AutoBackup so it can be backed up even when device is off
     const sourceName = `📱 [${deviceName}] ${detectedFolderName}`;
     const containerPath = hostPathToContainerPath(companionSourcesDir);
-    const existingSource = await db.get('SELECT id FROM sources WHERE host_path = ? OR name = ?', [companionSourcesDir, sourceName]);
+    const existingSource = await db.get(
+      'SELECT id FROM sources WHERE host_path = ? OR container_path = ? OR name = ?',
+      [companionSourcesDir, containerPath, sourceName]
+    );
     let sourceId = existingSource?.id;
     if (!sourceId) {
       sourceId = uuidv4();
@@ -2646,6 +2676,22 @@ app.post('/api/transfer/upload-files', async (req, res) => {
         [sourceId, sourceName, companionSourcesDir, containerPath, `companion,${safeDev.toLowerCase()}`]
       );
     }
+
+    // Seed stats cache so sources queries resolve instantly
+    folderStatsCache.set(path.normalize(companionSourcesDir), {
+      exists: true,
+      totalBytes,
+      fileCount: files.length,
+      formattedSize: formatBytes(totalBytes),
+      expiresAt: Date.now() + 10 * 60 * 1000
+    });
+
+    broadcastWS('sources_updated', {
+      sourceId,
+      sourceName,
+      containerPath,
+      hostPath: companionSourcesDir
+    });
 
     // Use rclone to copy companion folder to remote:targetPath
     const destSpec = cleanTargetPath ? `${remote}:${cleanTargetPath}` : `${remote}:`;

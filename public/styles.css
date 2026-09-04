@@ -1,6 +1,6 @@
 /* ==========================================================================
    AutoBackup — Premium Modern UI Design System
-   Sleek Obsidian & Precision Glass Aesthetic (v2.8.4)
+   Sleek Obsidian & Precision Glass Aesthetic (v2.8.5)
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -1617,14 +1617,28 @@ input[type="checkbox"] {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Active Cloud Transfers Banner Sticky Behavior */
+/* Active Cloud Transfers Banner Sticky Behavior (No translate3d to eliminate scroll jitter) */
 .active-transfers-container {
   position: sticky;
-  top: 0.5rem;
-  z-index: 1000;
+  top: 0.75rem;
+  z-index: 1050;
   margin-bottom: 1rem;
-  transform: translate3d(0, 0, 0);
-  -webkit-transform: translate3d(0, 0, 0);
+  contain: paint;
+}
+
+.active-transfer-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.1rem;
+  border-radius: var(--radius-md, 10px);
+  background: rgba(15, 23, 42, 0.96) !important;
+  border: 1px solid rgba(0, 242, 254, 0.35);
+  box-shadow: 0 10px 25px -4px rgba(0, 0, 0, 0.8), 0 0 15px rgba(0, 242, 254, 0.15);
+  margin-bottom: 0.5rem;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 /* ==========================================================================
