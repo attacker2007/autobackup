@@ -767,11 +767,11 @@ body::before {
   height: 100%;
   background: linear-gradient(90deg, #00f2fe, #3b82f6);
   border-radius: 2px;
-  transition: width 0.3s ease;
+  transition: width 0.25s linear;
+  will-change: width;
 }
 
 .task-progress-pulse {
-  width: 100% !important;
   animation: progress-pulse 1.4s ease-in-out infinite;
   background-size: 200% 100%;
   background-image: linear-gradient(90deg, #00f2fe 0%, #3b82f6 40%, #00f2fe 80%);
@@ -1631,8 +1631,26 @@ input[type="checkbox"] {
    STREAMLINED COMPANION MODE (TABLETS & SECONDARY DEVICES)
    ========================================================================== */
 
-body.companion-mode .host-only {
+/* Host Device hides companion-only elements (like the device backup top bar) */
+body.host-device .companion-only,
+body:not(.companion-device) .companion-only {
   display: none !important;
+}
+
+/* Companion Mode hides desktop host clutter (metric counters, host drive meters, admin buttons) */
+body.companion-mode .host-only,
+body.companion-device .host-only {
+  display: none !important;
+}
+
+/* On companion devices, streamline header navbar */
+body.companion-device .app-header {
+  padding: 0.65rem 1rem;
+  margin-bottom: 1rem;
+}
+
+body.companion-device .header-actions {
+  gap: 0.35rem;
 }
 
 .companion-mode-badge {

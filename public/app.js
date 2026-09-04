@@ -7,6 +7,12 @@ let remoteStatusMap = {};
 let remoteQuotaMap = {};
 let isCustomSourceMode = false;
 
+function isHostDevice() {
+  if (window.desktopApi) return true;
+  const h = window.location.hostname;
+  return (h === 'localhost' || h === '127.0.0.1' || h === '[::1]');
+}
+
 // Guards to prevent duplicate/concurrent fetches
 let isFetchingRemotes = false;
 let lastRemotesFetchTime = 0;
@@ -32,12 +38,12 @@ let appBooted = false;
 function boot() {
   if (appBooted) return;
   appBooted = true;
-  initApp();
-  initWebSocket();
-  setupEventListeners();
   initCompanionMode();
   initWakeLock();
   initDeviceBackup();
+  initApp();
+  initWebSocket();
+  setupEventListeners();
 }
 
 if (document.readyState === 'loading') {
@@ -280,6 +286,26 @@ function renderTasks() {
     return;
   }
 
+  // Preserve existing running task progress bar widths and live timers to prevent visual flicker
+  const existingProgress = {};
+  const existingTimers = {};
+  container.querySelectorAll('.task-progress-bar').forEach(bar => {
+    const tId = bar.id.replace('progress-bar-', '');
+    const fill = bar.querySelector('.task-progress-fill');
+    if (fill && !bar.classList.contains('hidden')) {
+      existingProgress[tId] = {
+        width: fill.style.width,
+        isPulse: fill.classList.contains('task-progress-pulse')
+      };
+    }
+  });
+  container.querySelectorAll('.task-timing-badge').forEach(timer => {
+    const tId = timer.id.replace('task-timing-', '');
+    if (timer.textContent && !timer.classList.contains('hidden')) {
+      existingTimers[tId] = timer.textContent;
+    }
+  });
+
   container.innerHTML = '';
 
   filteredTasks.forEach(task => {
@@ -411,14 +437,23 @@ function renderTasks() {
       `;
     }
 
-    // Progress bar (shown when running)
+    // Progress bar (shown when running, retaining previous progress if already active)
+    let currentWidth = isRunning ? '100%' : '0%';
+    let isPulse = isRunning;
+    if (isRunning && existingProgress[task.id]) {
+      currentWidth = existingProgress[task.id].width || currentWidth;
+      isPulse = existingProgress[task.id].isPulse;
+    }
+
     const progressBarHtml = isRunning
       ? `<div class="task-progress-bar" id="progress-bar-${task.id}">
-           <div class="task-progress-fill task-progress-pulse" style="width:100%"></div>
+           <div class="task-progress-fill ${isPulse ? 'task-progress-pulse' : ''}" style="width:${currentWidth}"></div>
          </div>`
       : `<div class="task-progress-bar hidden" id="progress-bar-${task.id}">
            <div class="task-progress-fill" style="width:0%"></div>
          </div>`;
+
+    const timerText = existingTimers[task.id] || '⏱️ Total: 00m 00s';
 
     card.innerHTML = `
       <div class="task-card-header">
@@ -446,7 +481,7 @@ function renderTasks() {
         <span>🕒 Schedule: <strong>${escapeHtml(scheduleDisplay)}</strong></span>
         <span>🕒 Last Run: ${task.last_run ? new Date(task.last_run).toLocaleString() : 'Never'}</span>
         <span>⏳ Next Run: <strong>${escapeHtml(nextRunDisplay)}</strong></span>
-        <span class="task-timing-badge ${isRunning ? '' : 'hidden'}" id="task-timing-${task.id}">⏱️ Total: 00m 00s</span>
+        <span class="task-timing-badge ${isRunning ? '' : 'hidden'}" id="task-timing-${task.id}">${timerText}</span>
         <span class="${statusClass}" id="status-pill-${task.id}" style="font-weight:700; font-size:0.72rem;">${statusLabel}</span>
       </div>
     `;
@@ -877,13 +912,15 @@ async function deleteSourceFolder(id) {
 
 async function fetchRemotes(force = false) {
   if (isFetchingRemotes) return;
+  const isCompanion = !isHostDevice();
+
   if (!force && (Date.now() - lastRemotesFetchTime < REMOTES_CACHE_TTL_MS)) {
     renderRemotesModalList();
     renderRemotesStatusGrid();
     populateRemoteDropdown();
     populateTransferRemoteDropdowns();
     populateDeviceBackupRemotes();
-    fetchRemoteQuotas();
+    if (!isCompanion) fetchRemoteQuotas();
     return;
   }
 
@@ -894,8 +931,20 @@ async function fetchRemotes(force = false) {
       fetch('/api/remotes/details')
     ]);
 
-    currentRemotes = await remotesRes.json();
-    remotesDetails = await detailsRes.json();
+    const rawRemotes = await remotesRes.json();
+    const rawDetails = await detailsRes.json();
+
+    // Ensure currentRemotes is cleanly normalized to strings for all list/dropdown lookups
+    currentRemotes = (Array.isArray(rawRemotes) ? rawRemotes : [])
+      .map(r => (typeof r === 'string' ? r : (r && r.name ? r.name : '')))
+      .filter(Boolean);
+
+    // If details are present or rawRemotes had objects, keep remotesDetails rich
+    if (Array.isArray(rawDetails) && rawDetails.length > 0) {
+      remotesDetails = rawDetails;
+    } else if (Array.isArray(rawRemotes) && rawRemotes.length > 0 && typeof rawRemotes[0] === 'object') {
+      remotesDetails = rawRemotes;
+    }
 
     renderRemotesModalList();
     renderRemotesStatusGrid();
@@ -904,9 +953,11 @@ async function fetchRemotes(force = false) {
     populateFilterRemoteDropdowns();
     populateDeviceBackupRemotes();
 
-    // Async fetch capacity quota info & auto-test connection statuses
-    fetchRemoteQuotas();
-    testAllRemotes(true);
+    // Async fetch capacity quota info & auto-test connection statuses on host PC only
+    if (!isCompanion) {
+      fetchRemoteQuotas();
+      testAllRemotes(true);
+    }
     lastRemotesFetchTime = Date.now();
   } catch (err) {
     console.error('Failed to fetch remotes:', err);
@@ -1320,7 +1371,11 @@ async function fetchSettings() {
     }
     const headerBadge = document.getElementById('header-device-badge');
     if (headerBadge) {
-      headerBadge.textContent = `💻 Node: ${nodeName}`;
+      if (isHostDevice()) {
+        headerBadge.textContent = `💻 Host: ${nodeName}`;
+      } else {
+        headerBadge.textContent = `📱 Companion (${getClientDeviceName()})`;
+      }
     }
 
     // Populate Zero-Knowledge Encryption Settings
@@ -1615,12 +1670,15 @@ function addActiveTransferBanner(transferId, taskName) {
   container.classList.remove('hidden');
 
   let card = document.getElementById(`active-transfer-card-${transferId}`);
-  if (!card) {
-    card = document.createElement('div');
-    card.id = `active-transfer-card-${transferId}`;
-    card.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; border-radius: 8px; background: rgba(0, 242, 254, 0.08); margin-bottom: 0.5rem;';
-    container.appendChild(card);
+  if (card) {
+    // Card already active and rendered; do not re-render to prevent progress bar flicker
+    return;
   }
+
+  card = document.createElement('div');
+  card.id = `active-transfer-card-${transferId}`;
+  card.style.cssText = 'display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; border-radius: 8px; background: rgba(0, 242, 254, 0.08); margin-bottom: 0.5rem;';
+  container.appendChild(card);
 
   card.innerHTML = `
     <div style="display: flex; align-items: center; gap: 0.75rem; flex: 1;">
@@ -1746,7 +1804,10 @@ function handleWebSocketMessage(msg) {
     hideTaskProgressBar(data.taskId);
     removeActiveTransferBanner(data.taskId, isPartial ? 'partial' : data.status, data.bytesTransferred);
 
-    if (window.desktopApi && typeof window.desktopApi.showNotification === 'function') {
+    const isHealthPing = (data.taskName && (data.taskName.includes('Health Ping') || data.taskName.includes('Ping:') || data.taskName.includes('Health Test'))) ||
+                         (data.taskId && String(data.taskId).startsWith('test-'));
+
+    if (!isHealthPing && window.desktopApi && typeof window.desktopApi.showNotification === 'function') {
       if (isPartial) {
         window.desktopApi.showNotification(`⚠️ Backup Partial: ${data.taskName}`, `Transferred: ${data.bytesTransferred}. ${data.failedFilesCount || 1} file(s) skipped due to locks/errors.`);
       } else if (data.status === 'success') {
@@ -5361,20 +5422,16 @@ function stopTaskLiveTimer(taskId, durationSec) {
 // ─── Streamlined Companion Mode (Tablets & Secondary Devices) ───────────────
 
 function initCompanionMode() {
-  const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-  const isNarrowScreen = window.innerWidth <= 1024;
-  const isLanClient = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-  
+  const host = isHostDevice();
   const savedMode = localStorage.getItem('autobackup_view_mode');
   let isCompanion = false;
 
-  if (savedMode === 'companion') {
-    isCompanion = true;
-  } else if (savedMode === 'host') {
-    isCompanion = false;
+  if (host) {
+    // If on host PC (Electron or localhost), default to Host Mode unless explicitly switched
+    isCompanion = (savedMode === 'companion');
   } else {
-    // Auto-detect: if on mobile, tablet, or accessing over LAN, default to Companion Mode!
-    isCompanion = isTouchDevice || isNarrowScreen || isLanClient;
+    // Remote device (tablet, phone, LAN browser): default to Companion Mode
+    isCompanion = (savedMode !== 'host');
   }
 
   applyCompanionMode(isCompanion);
@@ -5394,22 +5451,33 @@ function applyCompanionMode(isCompanion) {
   const toggleBtn = document.getElementById('btn-toggle-device-mode');
   const modeIcon = document.getElementById('device-mode-icon');
   const modeLabel = document.getElementById('device-mode-label');
+  const headerBadge = document.getElementById('header-device-badge');
 
   if (isCompanion) {
-    document.body.classList.add('companion-mode');
+    document.body.classList.add('companion-mode', 'companion-device');
+    document.body.classList.remove('host-device');
     if (modeIcon) modeIcon.textContent = '📱';
     if (modeLabel) modeLabel.textContent = 'Companion Mode';
     if (toggleBtn) {
       toggleBtn.title = 'In Companion Mode (host desktop clutter hidden). Click to switch to Host Admin Mode.';
       toggleBtn.classList.add('active');
     }
+    if (headerBadge) {
+      headerBadge.textContent = `📱 Companion (${getClientDeviceName()})`;
+    }
   } else {
-    document.body.classList.remove('companion-mode');
+    document.body.classList.remove('companion-mode', 'companion-device');
+    document.body.classList.add('host-device');
     if (modeIcon) modeIcon.textContent = '💻';
     if (modeLabel) modeLabel.textContent = 'Host Admin Mode';
     if (toggleBtn) {
       toggleBtn.title = 'In Host Admin Mode (showing all local host controls). Click to switch to Companion Mode.';
       toggleBtn.classList.remove('active');
+    }
+    if (headerBadge) {
+      const nodeInput = document.getElementById('setting-device-name-input');
+      const hostName = nodeInput?.value || 'Host PC';
+      headerBadge.textContent = `💻 Host: ${hostName}`;
     }
   }
 }
@@ -5470,19 +5538,28 @@ function updateWakeLockUI(isActive) {
 let selectedDeviceFiles = [];
 
 function initDeviceBackup() {
-  const selectBtn = document.getElementById('btn-select-device-files');
+  const selectFileBtn = document.getElementById('btn-select-device-files');
+  const selectFolderBtn = document.getElementById('btn-select-device-folder');
   const fileInput = document.getElementById('device-backup-file-input');
+  const folderFileInput = document.getElementById('device-backup-folder-input-file');
   const dropzone = document.getElementById('device-backup-dropzone');
   const uploadBtn = document.getElementById('btn-upload-device-files');
   const clearBtn = document.getElementById('btn-clear-device-files');
 
-  if (selectBtn && fileInput) {
-    selectBtn.onclick = () => fileInput.click();
+  if (selectFileBtn && fileInput) {
+    selectFileBtn.onclick = () => fileInput.click();
   }
 
-  if (dropzone && fileInput) {
+  if (selectFolderBtn && folderFileInput) {
+    selectFolderBtn.onclick = () => folderFileInput.click();
+  }
+
+  if (dropzone) {
     dropzone.onclick = (e) => {
-      if (e.target !== selectBtn) fileInput.click();
+      if (e.target !== selectFileBtn && e.target !== selectFolderBtn) {
+        if (folderFileInput) folderFileInput.click();
+        else if (fileInput) fileInput.click();
+      }
     };
     dropzone.ondragover = (e) => {
       e.preventDefault();
@@ -5500,7 +5577,15 @@ function initDeviceBackup() {
 
   if (fileInput) {
     fileInput.onchange = (e) => {
-      if (e.target.files) {
+      if (e.target.files && e.target.files.length > 0) {
+        handleDeviceFilesSelected(Array.from(e.target.files));
+      }
+    };
+  }
+
+  if (folderFileInput) {
+    folderFileInput.onchange = (e) => {
+      if (e.target.files && e.target.files.length > 0) {
         handleDeviceFilesSelected(Array.from(e.target.files));
       }
     };
@@ -5509,6 +5594,8 @@ function initDeviceBackup() {
   if (clearBtn) {
     clearBtn.onclick = () => {
       selectedDeviceFiles = [];
+      if (fileInput) fileInput.value = '';
+      if (folderFileInput) folderFileInput.value = '';
       updateDeviceFilesUI();
     };
   }
@@ -5529,15 +5616,30 @@ function populateDeviceBackupRemotes() {
     return;
   }
   currentRemotes.forEach(r => {
+    const name = typeof r === 'string' ? r : (r && r.name ? r.name : '');
+    if (!name) return;
+    const detail = (Array.isArray(remotesDetails) ? remotesDetails : []).find(d => d.name === name);
+    const type = (typeof r === 'object' && r && r.type) ? r.type : (detail?.type || 'remote');
     const opt = document.createElement('option');
-    opt.value = r.name;
-    opt.textContent = `☁️ ${r.name} (${r.type})`;
+    opt.value = name;
+    opt.textContent = `☁️ ${name} (${type})`;
     sel.appendChild(opt);
   });
 }
 
 function handleDeviceFilesSelected(files) {
-  selectedDeviceFiles = files;
+  selectedDeviceFiles = files || [];
+  const firstWithRel = selectedDeviceFiles.find(f => f.webkitRelativePath);
+  if (firstWithRel) {
+    const parts = firstWithRel.webkitRelativePath.split('/');
+    if (parts.length > 1) {
+      const folderName = parts[0];
+      const folderInput = document.getElementById('device-backup-folder-input');
+      if (folderInput && !folderInput.value) {
+        folderInput.value = `${getClientDeviceName()}_Backups/${folderName}`;
+      }
+    }
+  }
   updateDeviceFilesUI();
 }
 
@@ -5557,15 +5659,31 @@ function updateDeviceFilesUI() {
 
   let totalBytes = 0;
   chipsContainer.innerHTML = '';
-  selectedDeviceFiles.forEach(f => {
+  const firstWithRel = selectedDeviceFiles.find(f => f.webkitRelativePath);
+  const isFolderUpload = Boolean(firstWithRel);
+
+  selectedDeviceFiles.slice(0, 50).forEach(f => {
     totalBytes += f.size;
     const chip = document.createElement('span');
     chip.className = 'device-file-chip';
-    chip.textContent = `📄 ${f.name} (${formatFileSize(f.size)})`;
+    const displayPath = f.webkitRelativePath || f.name;
+    chip.textContent = `${isFolderUpload ? '📁' : '📄'} ${displayPath} (${formatFileSize(f.size)})`;
     chipsContainer.appendChild(chip);
   });
 
-  countText.textContent = `${selectedDeviceFiles.length} file(s) selected • Total: ${formatFileSize(totalBytes)}`;
+  if (selectedDeviceFiles.length > 50) {
+    for (let i = 50; i < selectedDeviceFiles.length; i++) {
+      totalBytes += selectedDeviceFiles[i].size;
+    }
+    const moreChip = document.createElement('span');
+    moreChip.className = 'device-file-chip';
+    moreChip.style.opacity = '0.7';
+    moreChip.textContent = `+ ${selectedDeviceFiles.length - 50} more file(s)...`;
+    chipsContainer.appendChild(moreChip);
+  }
+
+  const itemType = isFolderUpload ? 'file(s) in folder' : 'file(s)';
+  countText.textContent = `${selectedDeviceFiles.length} ${itemType} selected • Total: ${formatFileSize(totalBytes)}`;
   summaryBox.classList.remove('hidden');
   uploadBtn.disabled = false;
 }
@@ -5664,6 +5782,8 @@ async function uploadDeviceFilesToCloud() {
     selectedDeviceFiles = [];
     const fileInput = document.getElementById('device-backup-file-input');
     if (fileInput) fileInput.value = '';
+    const folderFileInput = document.getElementById('device-backup-folder-input-file');
+    if (folderFileInput) folderFileInput.value = '';
     updateDeviceFilesUI();
 
     setTimeout(() => {

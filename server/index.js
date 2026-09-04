@@ -2161,12 +2161,17 @@ app.get('/api/remotes/alerts', async (req, res) => {
 });
 
 /**
- * Get connected remotes list
+ * Get connected remotes list (instant, without network metrics)
  */
 app.get('/api/remotes', async (req, res) => {
   try {
-    const remotes = await rclone.listRemotes();
-    res.json(remotes);
+    const details = rclone.getRemotesDetails();
+    if (Array.isArray(details) && details.length > 0) {
+      return res.json(details.map(d => ({ name: d.name, type: d.type || 'remote' })));
+    }
+    const rawRemotes = await rclone.listRemotes();
+    const formatted = (rawRemotes || []).map(r => (typeof r === 'string' ? { name: r, type: 'remote' } : r));
+    res.json(formatted);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
